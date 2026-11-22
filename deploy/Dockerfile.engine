@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for the Rust trading engine (`whal-engine`) on Railway.
-FROM rust:1.85-slim AS builder
+FROM rust:slim-bookworm AS builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config \
     && rm -rf /var/lib/apt/lists/*

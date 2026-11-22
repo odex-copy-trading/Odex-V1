@@ -17,8 +17,9 @@ pub use shredstream::{ShredStreamConfig, ShredStreamIngestor};
 pub use state::{BalanceCache, WatchlistCache};
 pub use telemetry::{KolShredDetectedPayload, TelemetryEmitter};
 pub use types::{
-    compute_opportunity_key, DecodedInstruction, DecodedTx, KolRule, LaunchFilterConfig,
-    PubkeyBytes, StrategyId, TriggerEvent, TriggerKind, Venue, WSOL_MINT,
+    compute_opportunity_key, pubkey_from_bs58, pubkey_to_bs58, DecodedInstruction, DecodedTx,
+    KolRule, LaunchFilterConfig, PubkeyBytes, StrategyId, TriggerEvent, TriggerKind, Venue,
+    WSOL_MINT,
 };
 
 /// Top-level facade bundling the dual-feed ingestor, lock-free caches, detector, bus, and telemetry.
