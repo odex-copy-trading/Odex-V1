@@ -1,0 +1,40 @@
+{
+  "name": "whal-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Whal Bot operator terminal + control plane.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test lib/**/*.test.ts",
+    "config:schema": "tsx scripts/gen-config-schema.ts",
+    "server": "tsx --env-file=server/.env.local server/main.ts",
+    "server:keys": "tsx server/keys.ts",
+    "test:server": "tsx --test --test-concurrency=1 server/test/api.test.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.119.2",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.548.0",
+    "next": "^16.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "ws": "^8.18.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/ws": "^8.5.12",
+    "tailwindcss": "^4.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

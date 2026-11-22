@@ -1,0 +1,730 @@
+//! Whal Bot Trading Engine binary entry point (`whal-engine`).
+//!
+//! Wires together:
+//! - Step 2: `whal-config` (typed config + hot reload)
+//! - Step 3: `/internal/engine` WebSocket bridge (snapshot, live telemetry, control-plane commands)
+//! - Step 7: `ingest` (ShredStream + Geyser + SignalDetector + OpportunityBus)
+//! - Step 8: `executor` (TxBuilder + Ed25519 Wire Signer + NoncePool + Multi-Lander SWQoS Fan-Out)
+//! - Step 9: `exits` (ExitEngine + Lighthouse) & `treasury` (Jupiter V6 / ZeroFi WSOL -> USDC Sweeper)
+//! - Step 10: `safety` (Hard Circuit Breakers + Shadow Mode + NonceHealthMonitor) & `metrics` (Prometheus `/metrics` + `/health`)
+
+use std::env;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::sync::{broadcast, mpsc};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{client::IntoClientRequest, Message},
+};
+use tracing::{error, info, warn};
+
+use whal_engine::executor::{
+    builder::{build_venue_cpi_accounts, SPL_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID},
+    ExecutorRuntimeConfig, ExecutorService, ExecutorTelemetryEvent, HotWalletSigner, LanderConfig,
+    LanderId, NonceAccount, NoncePool, ProgramIds, TxVersion, V1TransactionConfig,
+};
+use whal_engine::exits::{ExitEngine, ExitPolicy, SellTxParams};
+use whal_engine::ingest::{
+    types::pubkey_from_bs58, GeyserConfig, IngestEngine, KolRule, LaunchFilterConfig, PubkeyBytes,
+    ShredStreamConfig, Venue, WatchlistCache,
+};
+use whal_engine::metrics::EngineMetrics;
+use whal_engine::safety::{HardSafetyLimits, SafetyCircuitBreakers};
+use whal_engine::treasury::{SweepRecord, SweeperConfig, TreasurySweeper};
+
+#[derive(Debug, Clone)]
+struct CliArgs {
+    config_path: Option<String>,
+    metrics_bind: String,
+    bridge_url: String,
+    bridge_token: String,
+}
+
+fn parse_args() -> CliArgs {
+    let mut config_path = env::var("WHAL_CONFIG_PATH").ok();
+    let default_port = env::var("PORT").unwrap_or_else(|_| "9100".into());
+    let mut metrics_bind = env::var("WHAL_METRICS_BIND")
+        .unwrap_or_else(|_| format!("0.0.0.0:{default_port}"));
+    let mut bridge_url = env::var("WHAL_BRIDGE_URL")
+        .unwrap_or_else(|_| "ws://127.0.0.1:8787/internal/engine".into());
+    let bridge_token = env::var("WHAL_ENGINE_BRIDGE_TOKEN").unwrap_or_default();
+
+    let mut it = env::args().skip(1);
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--config" => config_path = it.next(),
+            "--metrics-bind" => {
+                if let Some(v) = it.next() {
+                    metrics_bind = v;
+                }
+            }
+            "--bridge-url" => {
+                if let Some(v) = it.next() {
+                    bridge_url = v;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    CliArgs {
+        config_path,
+        metrics_bind,
+        bridge_url,
+        bridge_token,
+    }
+}
+
+fn env_pubkey(name: &str) -> PubkeyBytes {
+    match env::var(name) {
+        Ok(raw) if !raw.trim().is_empty() => match pubkey_from_bs58(raw.trim()) {
+            Ok(pk) => pk,
+            Err(e) => {
+                warn!(var = name, error = %e, "Invalid base58 pubkey in env; defaulting to zero");
+                [0u8; 32]
+            }
+        },
+        _ => [0u8; 32],
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Minimal zero-dependency HTTP server exposing Prometheus `/metrics` and Railway `/health`.
+async fn run_metrics_server(bind: String, metrics: Arc<EngineMetrics>) {
+    let listener = match TcpListener::bind(&bind).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!(bind = %bind, error = %e, "Failed to bind Prometheus metrics server");
+            return;
+        }
+    };
+    info!(bind = %bind, "Prometheus metrics & health server listening");
+
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let metrics = metrics.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            let n = stream.read(&mut buf).await.unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let (status, content_type, body) = if req.starts_with("GET /health") {
+                ("200 OK", "application/json", "{\"ok\":true}\n".to_string())
+            } else if req.starts_with("GET /metrics") {
+                (
+                    "200 OK",
+                    "text/plain; version=0.0.4; charset=utf-8",
+                    metrics.render_prometheus(),
+                )
+            } else {
+                ("404 Not Found", "text/plain", "not found\n".to_string())
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+        });
+    }
+}
+
+/// Parses a `config.apply` JSON payload from Step 3 and hot-reloads `ExecutorService` + `NoncePool`.
+fn apply_bridge_config(
+    cmd: &Value,
+    executor: &ExecutorService,
+    rpc_url: &str,
+    default_hot_wallet: PubkeyBytes,
+) {
+    let cfg = cmd.get("config").unwrap_or(cmd);
+    let hot_wallet = cfg
+        .pointer("/wallets/hot_wallet_pubkey")
+        .and_then(|v| v.as_str())
+        .and_then(|s| pubkey_from_bs58(s).ok())
+        .unwrap_or(default_hot_wallet);
+
+    // Nonce pool — initialize `ready: false` until live RPC populates each 32-byte durable blockhash.
+    if let Some(arr) = cfg.pointer("/wallets/nonce_accounts").and_then(|v| v.as_array()) {
+        let nonces: Vec<NonceAccount> = arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter_map(|s| pubkey_from_bs58(s).ok())
+            .map(|pubkey| NonceAccount {
+                pubkey,
+                nonce_hash: [0u8; 32],
+                ready: false,
+            })
+            .collect();
+        if !nonces.is_empty() {
+            let count = nonces.len();
+            let pool = executor.nonce_pool();
+            pool.replace(nonces);
+            let rpc = rpc_url.to_string();
+            tokio::spawn(async move {
+                let http = reqwest::Client::new();
+                let _ = pool.refresh_from_rpc(&http, &rpc).await;
+            });
+            info!(count, "Updated durable nonce pool from control-plane config (refreshing hashes)");
+        }
+    }
+
+    // Parse all 9 SWQoS landers
+    let lander_defs: [(&str, LanderId); 9] = [
+        ("jito", LanderId::Jito),
+        ("nozomi", LanderId::Nozomi),
+        ("stellium", LanderId::Stellium),
+        ("landx", LanderId::Landx),
+        ("bloom", LanderId::Bloom),
+        ("astralane", LanderId::Astralane),
+        ("glaive", LanderId::Glaive),
+        ("fastlanes", LanderId::Fastlanes),
+        ("tpu", LanderId::Tpu),
+    ];
+
+    let mut landers = Vec::new();
+    for (key, id) in lander_defs {
+        if let Some(l) = cfg
+            .pointer(&format!("/landers/providers/{key}"))
+            .or_else(|| cfg.pointer(&format!("/landers/{key}")))
+        {
+            let enabled = l.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let endpoint_url = l
+                .get("endpoint_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let auth_token = l
+                .get("auth_token")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned);
+            let tip_accounts: Vec<PubkeyBytes> = l
+                .get("tip_accounts")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str())
+                        .filter_map(|s| pubkey_from_bs58(s).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let min_tip_lamports = l
+                .get("min_tip_sol")
+                .and_then(|v| v.as_f64())
+                .map(|s| (s * 1_000_000_000.0).max(0.0) as u64)
+                .or_else(|| l.get("min_tip_lamports").and_then(|v| v.as_u64()))
+                .unwrap_or(100_000);
+            let max_tip_lamports = l
+                .get("max_tip_sol")
+                .and_then(|v| v.as_f64())
+                .map(|s| (s * 1_000_000_000.0).max(0.0) as u64)
+                .or_else(|| l.get("max_tip_lamports").and_then(|v| v.as_u64()))
+                .unwrap_or(5_000_000);
+            let fanout = l.get("fanout").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+
+            landers.push(LanderConfig {
+                id,
+                enabled,
+                endpoint_url,
+                auth_token,
+                tip_accounts,
+                min_tip_lamports,
+                max_tip_lamports,
+                fanout,
+            });
+        }
+    }
+
+    let tx_version = match cfg
+        .pointer("/landers/tx/version")
+        .or_else(|| cfg.pointer("/execution/tx_version"))
+        .and_then(|v| v.as_str())
+    {
+        Some("v0") => TxVersion::V0,
+        _ => TxVersion::V1,
+    };
+    let buy_slot_ttl = cfg
+        .pointer("/strategy/buy_slot_ttl/max")
+        .or_else(|| cfg.pointer("/execution/buy_slot_ttl"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(4);
+    let cu_limit = cfg
+        .pointer("/landers/tx/compute_unit_limit")
+        .or_else(|| cfg.pointer("/execution/compute_unit_limit"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(200_000) as u32;
+    let loaded_accounts_limit = cfg
+        .pointer("/landers/tx/loaded_accounts_data_size_limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(256 * 1024) as u32;
+    let priority_fee_lamports = cfg
+        .pointer("/landers/tx/priority_fee_lamports")
+        .or_else(|| cfg.pointer("/execution/priority_fee_lamports"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100_000);
+
+    let enabled_count = landers.iter().filter(|l| l.enabled).count();
+    executor.hot_reload(ExecutorRuntimeConfig {
+        hot_wallet,
+        tx_version,
+        v1_config: V1TransactionConfig {
+            compute_unit_limit: cu_limit,
+            loaded_accounts_data_size_limit: loaded_accounts_limit,
+            priority_fee_lamports,
+        },
+        lookup_tables: vec![],
+        buy_slot_ttl,
+        landers,
+    });
+    info!(enabled_landers = enabled_count, buy_slot_ttl, "Hot-reloaded ExecutorRuntimeConfig from bridge");
+}
+
+fn apply_kol_upsert(cmd: &Value, watchlist: &WatchlistCache) -> Result<(), String> {
+    let k = cmd.get("kol").unwrap_or(cmd);
+    let id = k.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let label = k.get("label").and_then(|v| v.as_str()).unwrap_or(&id).to_string();
+    let pubkey_str = k.get("pubkey").and_then(|v| v.as_str()).ok_or("missing kol.pubkey")?;
+    let pubkey = pubkey_from_bs58(pubkey_str).map_err(|e| e.to_string())?;
+    let quote = k.get("quote").and_then(|v| v.as_str()).unwrap_or("SOL");
+    let is_spl = quote != "SOL";
+    let scale = match quote {
+        "USDC" => 1_000_000.0,
+        "BONK" => 100_000.0,
+        _ => 1_000_000_000.0,
+    };
+    let trigger_margin = k.get("triggerMargin").and_then(|v| v.as_f64()).unwrap_or(0.02);
+    let buy_size_sol = k.get("buySizeSol").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let max_curve = k.get("maxCurveReserveSol").and_then(|v| v.as_f64()).unwrap_or(85.0);
+    let enabled = k.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    watchlist.upsert(KolRule {
+        id,
+        label,
+        pubkey,
+        quote_token_account: None,
+        is_spl_quote: is_spl,
+        margin_lamports: (trigger_margin * scale).max(1.0) as u64,
+        buy_size_lamports: (buy_size_sol * 1_000_000_000.0) as u64,
+        max_curve_reserve_lamports: (max_curve * 1_000_000_000.0) as u64,
+        enabled,
+    });
+    Ok(())
+}
+
+struct BridgeContext {
+    engine_status: Arc<RwLock<String>>,
+    executor: Arc<ExecutorService>,
+    exit_engine: Arc<ExitEngine>,
+    breakers: Arc<SafetyCircuitBreakers>,
+    watchlist: WatchlistCache,
+    rpc_url: String,
+    default_hot_wallet: PubkeyBytes,
+    outbound_tx: broadcast::Sender<Value>,
+}
+
+/// Connects to Step 3's `/internal/engine` WebSocket bridge, pushes an initial clean snapshot,
+/// forwards live engine events, and handles all control-plane commands.
+async fn run_bridge_loop(url: String, token: String, ctx: Arc<BridgeContext>) {
+    if token.len() < 32 {
+        warn!("WHAL_ENGINE_BRIDGE_TOKEN not set (<32 chars); bridge connection disabled");
+        return;
+    }
+
+    let mut backoff_ms = 500u64;
+    loop {
+        match connect_bridge_once(&url, &token, &ctx).await {
+            Ok(()) => backoff_ms = 500,
+            Err(e) => {
+                warn!(error = %e, backoff_ms, "Control-plane bridge disconnected; reconnecting");
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(10_000);
+            }
+        }
+    }
+}
+
+async fn connect_bridge_once(
+    url: &str,
+    token: &str,
+    ctx: &Arc<BridgeContext>,
+) -> Result<(), String> {
+    let mut req = url.into_client_request().map_err(|e| e.to_string())?;
+    let auth_val = format!("Bearer {token}")
+        .parse()
+        .map_err(|e: tokio_tungstenite::tungstenite::http::header::InvalidHeaderValue| e.to_string())?;
+    req.headers_mut().insert("Authorization", auth_val);
+
+    let (ws, _) = connect_async(req).await.map_err(|e| e.to_string())?;
+    info!(url = %url, "Connected to Step 3 control-plane bridge (/internal/engine)");
+    let (mut sink, mut stream) = ws.split();
+
+    let status = ctx
+        .engine_status
+        .read()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| "PAUSED".into());
+    let started = now_ms();
+    let nonce_count = ctx.executor.nonce_pool().len();
+    let snapshot = json!({
+        "type": "snapshot",
+        "runtime": {
+            "engine": { "status": status, "changedAt": started },
+            "chain": { "slot": 0, "shredLatencyMs": 0, "nonces": { "ready": nonce_count, "total": nonce_count }, "ring": { "used": 0, "size": 64 } },
+            "balances": { "sol": 0.0, "wsol": 0.0, "usdc": 0.0, "solUsd": 0.0 },
+            "feed": [],
+            "positions": [],
+            "closed": [],
+            "kols": [],
+            "landers": [],
+            "sweeps": [],
+            "inventory": [],
+            "rent": { "accountsClosed": 0, "reclaimedSol": 0.0, "openSeededAccounts": 0, "rentPerAccountSol": 0.00203928 },
+            "session": { "startedAt": started, "bursts": 0, "fills": 0, "txSent": 0, "realizedSol": 0.0 },
+            "nonces": []
+        }
+    });
+    sink.send(Message::Text(snapshot.to_string().into()))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut outbound_rx = ctx.outbound_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            ev = outbound_rx.recv() => {
+                if let Ok(payload) = ev {
+                    sink.send(Message::Text(payload.to_string().into()))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            msg = stream.next() => {
+                let Some(msg) = msg else { break; };
+                match msg {
+                    Ok(Message::Text(txt)) => {
+                        let parsed: Value = match serde_json::from_str(&txt) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        if parsed.get("type").and_then(|v| v.as_str()) != Some("command") {
+                            continue;
+                        }
+                        let id = parsed.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let cmd = parsed.get("command").cloned().unwrap_or(Value::Null);
+                        let cmd_type = cmd.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                        let (ok, err_msg) = match cmd_type {
+                            "control" => {
+                                let next = cmd.get("status").and_then(|v| v.as_str()).unwrap_or("PAUSED");
+                                if ctx.breakers.is_tripped() && next == "RUNNING" {
+                                    ctx.breakers.reset();
+                                }
+                                ctx.executor.set_shadow_mode(next == "SHADOW");
+                                if let Ok(mut st) = ctx.engine_status.write() {
+                                    *st = next.to_string();
+                                }
+                                let ev = json!({
+                                    "type": "event",
+                                    "event": { "type": "engine_status", "ts": now_ms(), "status": next, "source": "bridge" }
+                                });
+                                let _ = sink.send(Message::Text(ev.to_string().into())).await;
+                                (true, None)
+                            }
+                            "kill" => {
+                                let reason = cmd.get("reason").and_then(|v| v.as_str()).unwrap_or("Emergency kill");
+                                if let Ok(mut st) = ctx.engine_status.write() {
+                                    *st = "KILLED".to_string();
+                                }
+                                let ev = json!({
+                                    "type": "event",
+                                    "event": { "type": "engine_status", "ts": now_ms(), "status": "KILLED", "reason": reason, "source": "bridge" }
+                                });
+                                let _ = sink.send(Message::Text(ev.to_string().into())).await;
+                                (true, None)
+                            }
+                            "config.apply" => {
+                                apply_bridge_config(&cmd, &ctx.executor, &ctx.rpc_url, ctx.default_hot_wallet);
+                                (true, None)
+                            }
+                            "kol.upsert" => match apply_kol_upsert(&cmd, &ctx.watchlist) {
+                                Ok(()) => (true, None),
+                                Err(e) => (false, Some(e)),
+                            },
+                            "kol.remove" => {
+                                if let Some(id) = cmd.get("id").and_then(|v| v.as_str()) {
+                                    ctx.watchlist.remove_by_id(id);
+                                }
+                                if let Some(pk) = cmd.get("pubkey").and_then(|v| v.as_str()).and_then(|s| pubkey_from_bs58(s).ok()) {
+                                    ctx.watchlist.remove_by_wallet(&pk);
+                                }
+                                (true, None)
+                            }
+                            "nonce" => {
+                                let pool = ctx.executor.nonce_pool();
+                                let rpc = ctx.rpc_url.clone();
+                                tokio::spawn(async move {
+                                    let http = reqwest::Client::new();
+                                    let _ = pool.refresh_from_rpc(&http, &rpc).await;
+                                });
+                                (true, None)
+                            }
+                            "sell" => {
+                                let mint_str = cmd.get("mint").and_then(|v| v.as_str()).unwrap_or("");
+                                let pct = cmd.get("pct").and_then(|v| v.as_u64()).unwrap_or(100).clamp(1, 100);
+                                let close_on_full = cmd.get("closeAccount").and_then(|v| v.as_bool()).unwrap_or(true);
+                                match pubkey_from_bs58(mint_str) {
+                                    Ok(mint_pk) => match ctx.exit_engine.get_position(&mint_pk) {
+                                        Some(pos) => {
+                                            let progs = ctx.executor.programs();
+                                            let target_dex = match pos.venue {
+                                                Venue::PumpFun => progs.pumpfun_program,
+                                                Venue::PumpSwap => progs.pumpswap_program,
+                                                Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => progs.launchlab_program,
+                                            };
+                                            let token_prog = if pos.is_token_2022 {
+                                                TOKEN_2022_PROGRAM_ID
+                                            } else {
+                                                SPL_TOKEN_PROGRAM_ID
+                                            };
+                                            let hot_wallet = ctx.executor.hot_wallet();
+                                            let cpi_accounts = build_venue_cpi_accounts(
+                                                pos.venue,
+                                                &pos.dex_accounts,
+                                                hot_wallet,
+                                                pos.bot_token_account,
+                                                None,
+                                                token_prog,
+                                            );
+                                            let params = SellTxParams {
+                                                sell_router_program: progs.sell_router_program,
+                                                target_dex_program: target_dex,
+                                                venue: pos.venue,
+                                                hot_wallet,
+                                                bot_token_account: pos.bot_token_account,
+                                                pool_or_curve: pos.pool_or_curve,
+                                                is_token_2022: pos.is_token_2022,
+                                                pre_balance: pos.token_balance,
+                                                sell_pct: pct,
+                                                min_quote_out: 1,
+                                                min_liquidity_floor_lamports: 0,
+                                                current_slot: pos.opened_slot,
+                                                close_on_full_exit: close_on_full,
+                                                cpi_accounts,
+                                            };
+                                            let exec = ctx.executor.clone();
+                                            let exits = ctx.exit_engine.clone();
+                                            tokio::spawn(async move {
+                                                let summary = exec.execute_sell(params).await;
+                                                if pct >= 100 && summary.winner.is_some() {
+                                                    exits.remove_position(&mint_pk);
+                                                }
+                                            });
+                                            (true, None)
+                                        }
+                                        None => (false, Some(format!("No open position for mint {mint_str}"))),
+                                    },
+                                    Err(e) => (false, Some(format!("Invalid mint pubkey: {e}"))),
+                                }
+                            }
+                            _ => (false, Some(format!("Unknown command: {cmd_type}"))),
+                        };
+
+                        let ack = json!({ "type": "ack", "id": id, "ok": ok, "error": err_msg });
+                        sink.send(Message::Text(ack.to_string().into()))
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok(Message::Ping(p)) => {
+                        let _ = sink.send(Message::Pong(p)).await;
+                    }
+                    Ok(Message::Close(_)) => return Err("bridge closed by control plane".into()),
+                    Err(e) => return Err(e.to_string()),
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let args = parse_args();
+    let signer = match HotWalletSigner::from_env() {
+        Ok(Some(s)) => {
+            info!(hot_wallet = %s.pubkey_bs58(), "Loaded HotWalletSigner from environment");
+            Some(Arc::new(s))
+        }
+        Ok(None) => {
+            warn!("No WHAL_HOT_WALLET_KEYPAIR set; running in unsigned/shadow-safe mode");
+            None
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to parse WHAL_HOT_WALLET_KEYPAIR");
+            None
+        }
+    };
+    let hot_wallet_pubkey = signer.as_ref().map(|s| s.pubkey()).unwrap_or([0u8; 32]);
+
+    info!(
+        config = ?args.config_path,
+        metrics = %args.metrics_bind,
+        bridge = %args.bridge_url,
+        "Starting whal-engine"
+    );
+
+    let metrics = Arc::new(EngineMetrics::default());
+    let breakers = Arc::new(SafetyCircuitBreakers::new(HardSafetyLimits::default()));
+    let engine_status = Arc::new(RwLock::new("PAUSED".to_string()));
+    let (outbound_tx, _) = broadcast::channel::<Value>(512);
+
+    // Step 7: Live Ingest (Jito ShredStream + Yellowstone Geyser) & Opportunity Bus
+    let ingest = IngestEngine::new(
+        ShredStreamConfig {
+            endpoint_url: env::var("WHAL_SHREDSTREAM_URL").unwrap_or_default(),
+            auth_token: env::var("WHAL_SHREDSTREAM_TOKEN").ok(),
+        },
+        GeyserConfig {
+            grpc_url: env::var("WHAL_GEYSER_URL").unwrap_or_default(),
+            x_token: env::var("WHAL_GEYSER_TOKEN").ok(),
+        },
+        LaunchFilterConfig::default(),
+        None,
+    );
+    let _shred_handle = ingest.shredstream.clone().spawn_live();
+    let _geyser_handle = ingest.geyser.clone().spawn_live();
+
+    let rpc_url = env::var("WHAL_RPC_HTTP_URL")
+        .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".into());
+
+    // Step 8 & 9: Exit Engine + Executor Service with Ed25519 HotWalletSigner & Env Program IDs
+    let exit_engine = Arc::new(ExitEngine::new(ExitPolicy::default()));
+    let (exec_tel_tx, mut exec_tel_rx) = mpsc::channel::<ExecutorTelemetryEvent>(256);
+    let executor = Arc::new(ExecutorService::with_signer(
+        ProgramIds {
+            dedupe_program: env_pubkey("WHAL_DEDUPE_PROGRAM_ID"),
+            dedupe_state_account: env_pubkey("WHAL_DEDUPE_STATE_ACCOUNT"),
+            router_program: env_pubkey("WHAL_ROUTER_PROGRAM_ID"),
+            generic_quote_program: env_pubkey("WHAL_GENERIC_QUOTE_PROGRAM_ID"),
+            sell_router_program: env_pubkey("WHAL_SELL_ROUTER_PROGRAM_ID"),
+            pumpfun_program: whal_engine::ingest::detector::PUMPFUN_PROGRAM_ID,
+            pumpswap_program: whal_engine::ingest::detector::PUMPSWAP_PROGRAM_ID,
+            launchlab_program: whal_engine::ingest::detector::LAUNCHLAB_PROGRAM_ID,
+        },
+        NoncePool::new(vec![]),
+        ExecutorRuntimeConfig {
+            hot_wallet: hot_wallet_pubkey,
+            tx_version: TxVersion::V1,
+            v1_config: V1TransactionConfig {
+                compute_unit_limit: 200_000,
+                loaded_accounts_data_size_limit: 256 * 1024,
+                priority_fee_lamports: 100_000,
+            },
+            lookup_tables: vec![],
+            buy_slot_ttl: 4,
+            landers: vec![],
+        },
+        exec_tel_tx,
+        signer.clone(),
+        Some(exit_engine.clone()),
+    ));
+    let _nonce_sync_handle = executor.nonce_pool().spawn_rpc_sync(rpc_url.clone(), 4);
+    let _exec_handle = executor.clone().spawn(ingest.bus.subscribe());
+
+    // Forward Executor telemetry -> Step 3 Control Plane bridge
+    let exec_out = outbound_tx.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = exec_tel_rx.recv().await {
+            if let Ok(val) = serde_json::to_value(&ev) {
+                let _ = exec_out.send(json!({ "type": "event", "event": val }));
+            }
+        }
+    });
+
+    // 30s Signed Jupiter WSOL -> USDC Treasury Sweeper
+    let (sweep_tx, mut sweep_rx) = mpsc::channel::<SweepRecord>(64);
+    let mut sweeper_cfg = SweeperConfig::default();
+    sweeper_cfg.wsol_vault_ata = env_pubkey("WHAL_WSOL_VAULT_ATA");
+    sweeper_cfg.hot_wallet_bs58 = signer.as_ref().map(|s| s.pubkey_bs58()).unwrap_or_default();
+    sweeper_cfg.rpc_url = rpc_url.clone();
+    sweeper_cfg.enabled = signer.is_some() && sweeper_cfg.wsol_vault_ata != [0u8; 32];
+    let sweeper = Arc::new(TreasurySweeper::with_signer(
+        sweeper_cfg,
+        ingest.balances.clone(),
+        sweep_tx,
+        signer,
+    ));
+    let _sweep_handle = sweeper.spawn();
+
+    // Forward Treasury sweeps -> Step 3 Control Plane bridge
+    let sweep_out = outbound_tx.clone();
+    tokio::spawn(async move {
+        while let Some(rec) = sweep_rx.recv().await {
+            let _ = sweep_out.send(json!({
+                "type": "event",
+                "event": { "type": "sweep_executed", "ts": rec.ts, "sweep": rec }
+            }));
+        }
+    });
+
+    // Periodic live slot_tick forwarder (from ShredStream / Geyser)
+    let slot_out = outbound_tx.clone();
+    let shred_ref = ingest.shredstream.clone();
+    let geyser_ref = ingest.geyser.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(800));
+        let mut last_sent = 0u64;
+        loop {
+            interval.tick().await;
+            let slot = shred_ref.latest_slot().max(geyser_ref.latest_slot());
+            if slot > last_sent {
+                last_sent = slot;
+                let _ = slot_out.send(json!({
+                    "type": "event",
+                    "event": { "type": "slot_tick", "ts": now_ms(), "slot": slot, "shredLatencyMs": 0 }
+                }));
+            }
+        }
+    });
+
+    // Step 10: Prometheus /metrics + /health server & Step 3 /internal/engine bridge
+    let bridge_ctx = Arc::new(BridgeContext {
+        engine_status,
+        executor,
+        exit_engine,
+        breakers,
+        watchlist: ingest.watchlist.clone(),
+        rpc_url,
+        default_hot_wallet: hot_wallet_pubkey,
+        outbound_tx,
+    });
+    let metrics_task = tokio::spawn(run_metrics_server(args.metrics_bind, metrics));
+    let bridge_task = tokio::spawn(run_bridge_loop(
+        args.bridge_url,
+        args.bridge_token,
+        bridge_ctx,
+    ));
+
+    let _ = tokio::signal::ctrl_c().await;
+    info!("Received Ctrl+C, shutting down whal-engine");
+    metrics_task.abort();
+    bridge_task.abort();
+}

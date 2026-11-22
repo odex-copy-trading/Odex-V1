@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: whal
+      POSTGRES_USER: whal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-whal_change_me}
+    volumes:
+      - whal_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U whal -d whal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./server/.env.local
+    environment:
+      WHAL_HOST: 0.0.0.0
+      WHAL_PORT: 8787
+      WHAL_CORS_ORIGINS: ${WHAL_CORS_ORIGINS:-http://localhost:3000}
+      DATABASE_URL: postgres://whal:${POSTGRES_PASSWORD:-whal_change_me}@postgres:5432/whal
+    ports:
+      - "8787:8787"
+    volumes:
+      - whal_cp_data:/app/.data
+
+  ui:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.ui
+      args:
+        NEXT_PUBLIC_WHAL_API_URL: ${NEXT_PUBLIC_WHAL_API_URL:-http://localhost:8787}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - whal_prom:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-whal_admin}
+    ports:
+      - "3001:3000"
+    volumes:
+      - whal_grafana:/var/lib/grafana
+
+volumes:
+  whal_pgdata:
+  whal_cp_data:
+  whal_prom:
+  whal_grafana:

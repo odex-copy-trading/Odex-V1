@@ -1,0 +1,11 @@
+node_modules/
+.next/
+out/
+.env*
+*.log
+next-env.d.ts.bak
+.preview/
+.data/
+server/.env.local
+target/
+**/target/

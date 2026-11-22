@@ -1,0 +1,859 @@
+{
+  "$id": "https://whal.bot/schemas/bot-config.schema.json",
+  "title": "Whal Bot configuration",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "rpc_primary_url": {
+          "type": "string"
+        },
+        "rpc_backup_urls": {
+          "maxItems": 4,
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "geyser_grpc_url": {
+          "type": "string"
+        },
+        "shredstream_url": {
+          "type": "string"
+        },
+        "commitment": {
+          "type": "string",
+          "enum": [
+            "processed",
+            "confirmed",
+            "finalized"
+          ]
+        },
+        "slot_clock_offset_ms": {
+          "type": "integer",
+          "minimum": -2000,
+          "maximum": 2000
+        }
+      },
+      "required": [
+        "rpc_primary_url",
+        "rpc_backup_urls",
+        "geyser_grpc_url",
+        "shredstream_url",
+        "commitment",
+        "slot_clock_offset_ms"
+      ],
+      "additionalProperties": false
+    },
+    "wallets": {
+      "type": "object",
+      "properties": {
+        "hot_wallet_pubkey": {
+          "type": "string"
+        },
+        "signer_source": {
+          "type": "string",
+          "enum": [
+            "encrypted_keystore",
+            "remote_signer"
+          ]
+        },
+        "wsol_vault_ata": {
+          "type": "string"
+        },
+        "nonce_accounts": {
+          "minItems": 1,
+          "maxItems": 32,
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nonce_auto_create": {
+          "type": "boolean"
+        },
+        "nonce_target_pool_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "nonce_health_check_secs": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 3600
+        },
+        "nonce_min_balance_sol": {
+          "type": "number",
+          "minimum": 0.0015,
+          "maximum": 1
+        },
+        "max_hot_wallet_sol": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 10000
+        }
+      },
+      "required": [
+        "hot_wallet_pubkey",
+        "signer_source",
+        "wsol_vault_ata",
+        "nonce_accounts",
+        "nonce_auto_create",
+        "nonce_target_pool_size",
+        "nonce_health_check_secs",
+        "nonce_min_balance_sol",
+        "max_hot_wallet_sol"
+      ],
+      "additionalProperties": false
+    },
+    "strategy": {
+      "type": "object",
+      "properties": {
+        "modes": {
+          "type": "object",
+          "properties": {
+            "kol_backrun": {
+              "type": "boolean"
+            },
+            "pumpfun_create_snipe": {
+              "type": "boolean"
+            },
+            "generic_quote_snipe": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kol_backrun",
+            "pumpfun_create_snipe",
+            "generic_quote_snipe"
+          ],
+          "additionalProperties": false
+        },
+        "default_buy_sol": {
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 100
+        },
+        "min_buy_sol": {
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 100
+        },
+        "max_buy_sol": {
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 100
+        },
+        "max_curve_reserve_sol": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "slippage_bps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5000
+        },
+        "default_kol_margin_sol": {
+          "type": "number",
+          "minimum": 0.000001,
+          "maximum": 10
+        },
+        "buy_slot_ttl": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "additionalProperties": false
+        },
+        "generic_quote_mints": {
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "modes",
+        "default_buy_sol",
+        "min_buy_sol",
+        "max_buy_sol",
+        "max_curve_reserve_sol",
+        "slippage_bps",
+        "default_kol_margin_sol",
+        "buy_slot_ttl",
+        "generic_quote_mints"
+      ],
+      "additionalProperties": false
+    },
+    "landers": {
+      "type": "object",
+      "properties": {
+        "providers": {
+          "type": "object",
+          "properties": {
+            "jito": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint_url": {
+                  "type": "string"
+                },
+                "tip_accounts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "min_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "fanout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32
+                }
+              },
+              "required": [
+                "enabled",
+                "endpoint_url",
+                "tip_accounts",
+                "min_tip_sol",
+                "max_tip_sol",
+                "fanout"
+              ],
+              "additionalProperties": false
+            },
+            "nozomi": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint_url": {
+                  "type": "string"
+                },
+                "tip_accounts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "min_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "fanout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32
+                }
+              },
+              "required": [
+                "enabled",
+                "endpoint_url",
+                "tip_accounts",
+                "min_tip_sol",
+                "max_tip_sol",
+                "fanout"
+              ],
+              "additionalProperties": false
+            },
+            "stellium": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint_url": {
+                  "type": "string"
+                },
+                "tip_accounts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "min_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "fanout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32
+                }
+              },
+              "required": [
+                "enabled",
+                "endpoint_url",
+                "tip_accounts",
+                "min_tip_sol",
+                "max_tip_sol",
+                "fanout"
+              ],
+              "additionalProperties": false
+            },
+            "landx": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint_url": {
+                  "type": "string"
+                },
+                "tip_accounts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "min_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "fanout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32
+                }
+              },
+              "required": [
+                "enabled",
+                "endpoint_url",
+                "tip_accounts",
+                "min_tip_sol",
+                "max_tip_sol",
+                "fanout"
+              ],
+              "additionalProperties": false
+            },
+            "bloom": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint_url": {
+                  "type": "string"
+                },
+                "tip_accounts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "min_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "fanout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32
+                }
+              },
+              "required": [
+                "enabled",
+                "endpoint_url",
+                "tip_accounts",
+                "min_tip_sol",
+                "max_tip_sol",
+                "fanout"
+              ],
+              "additionalProperties": false
+            },
+            "astralane": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint_url": {
+                  "type": "string"
+                },
+                "tip_accounts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "min_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "fanout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32
+                }
+              },
+              "required": [
+                "enabled",
+                "endpoint_url",
+                "tip_accounts",
+                "min_tip_sol",
+                "max_tip_sol",
+                "fanout"
+              ],
+              "additionalProperties": false
+            },
+            "glaive": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint_url": {
+                  "type": "string"
+                },
+                "tip_accounts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "min_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "fanout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32
+                }
+              },
+              "required": [
+                "enabled",
+                "endpoint_url",
+                "tip_accounts",
+                "min_tip_sol",
+                "max_tip_sol",
+                "fanout"
+              ],
+              "additionalProperties": false
+            },
+            "fastlanes": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint_url": {
+                  "type": "string"
+                },
+                "tip_accounts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "min_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "fanout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32
+                }
+              },
+              "required": [
+                "enabled",
+                "endpoint_url",
+                "tip_accounts",
+                "min_tip_sol",
+                "max_tip_sol",
+                "fanout"
+              ],
+              "additionalProperties": false
+            },
+            "tpu": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "endpoint_url": {
+                  "type": "string"
+                },
+                "tip_accounts": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "min_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_tip_sol": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "fanout": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32
+                }
+              },
+              "required": [
+                "enabled",
+                "endpoint_url",
+                "tip_accounts",
+                "min_tip_sol",
+                "max_tip_sol",
+                "fanout"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "jito",
+            "nozomi",
+            "stellium",
+            "landx",
+            "bloom",
+            "astralane",
+            "glaive",
+            "fastlanes",
+            "tpu"
+          ],
+          "additionalProperties": false
+        },
+        "tx": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string",
+              "enum": [
+                "v1",
+                "v0",
+                "legacy"
+              ]
+            },
+            "compute_unit_limit": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 1400000
+            },
+            "loaded_accounts_data_size_limit": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 67108864
+            },
+            "priority_fee_lamports": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000000
+            }
+          },
+          "required": [
+            "version",
+            "compute_unit_limit",
+            "loaded_accounts_data_size_limit",
+            "priority_fee_lamports"
+          ],
+          "additionalProperties": false
+        },
+        "max_hourly_burn_sol": {
+          "type": "number",
+          "minimum": 0.001,
+          "maximum": 1000
+        }
+      },
+      "required": [
+        "providers",
+        "tx",
+        "max_hourly_burn_sol"
+      ],
+      "additionalProperties": false
+    },
+    "exits": {
+      "type": "object",
+      "properties": {
+        "instant_tp_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "ladder": {
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sell_pct": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 100
+              },
+              "trigger": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "pnl_multiple"
+                      },
+                      "value": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1000
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "time_secs"
+                      },
+                      "value": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 86400
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "required": [
+              "sell_pct",
+              "trigger"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "stop_loss_pct": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 99
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trailing_stop_pct": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 99
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "curve_floor": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "min_real_sol_reserves_sol": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100000
+            }
+          },
+          "required": [
+            "enabled",
+            "min_real_sol_reserves_sol"
+          ],
+          "additionalProperties": false
+        },
+        "sell_slot_ttl": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 64
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 64
+            }
+          },
+          "required": [
+            "min",
+            "max"
+          ],
+          "additionalProperties": false
+        },
+        "auto_close_account": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "instant_tp_pct",
+        "ladder",
+        "stop_loss_pct",
+        "trailing_stop_pct",
+        "curve_floor",
+        "sell_slot_ttl",
+        "auto_close_account"
+      ],
+      "additionalProperties": false
+    },
+    "treasury": {
+      "type": "object",
+      "properties": {
+        "sweep_enabled": {
+          "type": "boolean"
+        },
+        "trigger_wsol_threshold": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "clip_wsol": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 10000
+        },
+        "target_mint": {
+          "type": "string"
+        },
+        "route": {
+          "type": "string",
+          "enum": [
+            "jupiter_v6"
+          ]
+        },
+        "slippage_bps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5000
+        },
+        "max_priority_fee_lamports": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000000
+        }
+      },
+      "required": [
+        "sweep_enabled",
+        "trigger_wsol_threshold",
+        "clip_wsol",
+        "target_mint",
+        "route",
+        "slippage_bps",
+        "max_priority_fee_lamports"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "version",
+    "network",
+    "wallets",
+    "strategy",
+    "landers",
+    "exits",
+    "treasury"
+  ],
+  "additionalProperties": false
+}

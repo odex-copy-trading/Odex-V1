@@ -1,0 +1,27 @@
+[package]
+name = "whal-dedupe"
+version = "0.1.0"
+edition = "2021"
+description = "Ultra-low-CU Pinocchio ring-buffer deduplication and slot-TTL guard for Whal Bot."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = []
+no-entrypoint = []
+
+[dependencies]
+pinocchio = "0.8"
+
+[dev-dependencies]
+mollusk-svm = "0.1"
+solana-sdk = "2.1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

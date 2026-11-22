@@ -1,0 +1,44 @@
+[Unit]
+Description=Whal Bot Ultra-Low-Latency Rust Trading Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=whal
+Group=whal
+WorkingDirectory=/opt/whal-bot/engine
+EnvironmentFile=/etc/whal-bot/engine.env
+
+# Compiled with: cargo build --release --features jemalloc
+ExecStart=/opt/whal-bot/engine/target/release/whal-engine \
+  --config /etc/whal-bot/config.json \
+  --metrics-bind 127.0.0.1:9100
+
+# Low-latency CPU pinning (dedicated isolated cores 2-7; keep OS IRQs on 0-1)
+CPUAffinity=2 3 4 5 6 7
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=80
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+
+# jemalloc tuning for deterministic sub-millisecond allocation
+Environment=MALLOC_CONF=background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0
+Environment=RUST_LOG=info,whal_engine=debug
+
+# Memory locking & high descriptor limits for gRPC + multi-lander sockets
+LimitMEMLOCK=infinity
+LimitNOFILE=1048576
+OOMScoreAdjust=-900
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/whal-bot
+
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+[package]
+name = "whal-generic-quote"
+version = "0.1.0"
+edition = "2021"
+description = "Pinocchio (no_std) generic-quote LaunchLab buyer for post-Meteora SwapExactOut2 atomic chaining."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = []
+no-entrypoint = []
+
+[dependencies]
+pinocchio = "0.8"
+
+[dev-dependencies]
+litesvm = "0.5"
+solana-sdk = "2.1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

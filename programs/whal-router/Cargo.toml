@@ -1,0 +1,27 @@
+[package]
+name = "whal-router"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal no_std Pinocchio KOL balance-delta guard and multi-venue CPI buy router for Whal Bot."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = []
+no-entrypoint = []
+
+[dependencies]
+pinocchio = "0.8"
+
+[dev-dependencies]
+litesvm = "0.5"
+solana-sdk = "2.1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

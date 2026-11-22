@@ -1,0 +1,327 @@
+// Control-plane domain logic: owns config versions, KOL rules, history and audit; relays to the engine.
+import { EventEmitter } from 'node:events';
+import { z } from 'zod';
+import { DEFAULT_CONFIG, diffConfig, validateConfig, type BotConfig, type FieldErrors } from '../lib/config/schema';
+import { isPubkey } from '../lib/pubkey';
+import { SELL_PCTS, type EngineSource, type SellPct, type StateSnapshot, type TelemetryEvent } from '../lib/telemetry';
+import type { ConfigState, Kol, NonceHealth } from '../lib/types';
+import type { Db } from './db';
+import { HttpError } from './http';
+import type { SecretStore } from './secrets';
+import { EngineError, type AdapterEvent, type EngineAdapter, type EngineRuntime } from './engine/types';
+
+export interface Actor { actor: string; ip: string | null }
+
+export const KolInput = z.object({
+  label: z.string().trim().min(1, 'Give this wallet a label').max(32, '32 characters max'),
+  pubkey: z.string().trim().refine(isPubkey, 'Not a valid Solana public key'),
+  quote: z.enum(['SOL', 'WSOL', 'USDC', 'BONK']),
+  triggerMargin: z.number().gt(0, 'Must be greater than 0'),
+  buySizeSol: z.number().min(0.01).max(100),
+  maxCurveReserveSol: z.number().gt(0),
+  enabled: z.boolean(),
+}).strict();
+export const KolPatch = KolInput.partial().strict();
+export const ControlInput = z.object({
+  action: z.enum(['start', 'pause', 'shadow_mode', 'emergency_kill_switch']),
+  reason: z.string().trim().max(200).optional(),
+}).strict();
+export const SellInput = z.object({ pct: z.number().refine((v): v is SellPct => (SELL_PCTS as readonly number[]).includes(v), 'pct must be one of 15, 25, 33, 50, 100') }).strict();
+export const NonceInput = z.object({
+  action: z.enum(['create', 'topup', 'advance', 'check']),
+  count: z.number().int().min(1).max(32).optional(),
+  pubkey: z.string().refine(isPubkey, 'Not a valid public key').optional(),
+}).strict().refine((n) => n.action !== 'advance' || !!n.pubkey, { message: 'pubkey is required to advance a nonce', path: ['pubkey'] });
+export const ConfigPut = z.object({ baseVersion: z.number().int().min(1), config: z.unknown() }).strict();
+
+export function zodFields(e: z.ZodError): FieldErrors {
+  const out: FieldErrors = {};
+  for (const i of e.issues) out[i.path.join('.') || '_'] ??= i.message;
+  return out;
+}
+export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
+  const r = schema.safeParse(body ?? {});
+  if (!r.success) throw new HttpError(400, 'Validation failed', { fields: zodFields(r.error) });
+  return r.data;
+}
+
+type Breaker = 'hourly_burn' | 'hot_wallet_ceiling' | 'engine_disconnected';
+
+export class ControlPlane extends EventEmitter {
+  private rt: EngineRuntime | null = null;
+  private liveChain = { slot: 0, shredLatencyMs: 0, nonces: { ready: 0, total: 0 }, ring: { used: 0, size: 64 } };
+  private liveBalances = { sol: 0, wsol: 0, usdc: 0, solUsd: 0 };
+  private cfg: { version: number; config: BotConfig; updatedAt: number };
+  private burnSamples: [number, number][] = [];
+  private tripped = new Set<Breaker>();
+  readonly startedAt = Date.now();
+
+  constructor(private db: Db, private secrets: SecretStore, private engine: EngineAdapter, seed?: { config: BotConfig; kols: Kol[] }) {
+    super();
+    this.setMaxListeners(0);
+    let latest = db.latestConfig();
+    if (!latest) {
+      db.insertConfig(1, seed?.config ?? structuredClone(DEFAULT_CONFIG), 'bootstrap', []);
+      latest = db.latestConfig()!;
+    }
+    this.cfg = { version: latest.version, config: latest.config, updatedAt: latest.createdAt };
+    db.clearPendingRestart();
+    if (db.listKols().length === 0 && seed?.kols.length) for (const k of seed.kols) db.upsertKol(k);
+    engine.onEvent((e) => this.onEngine(e));
+  }
+
+  get engineSource(): EngineSource { return this.rt ? this.engine.source : 'disconnected'; }
+
+  /** Push persisted config and KOL rules to a (re)connected engine. */
+  async syncEngine() {
+    await this.engine.command({ type: 'config.apply', version: this.cfg.version, config: this.cfg.config }).catch((e) => console.warn('[control] config sync failed:', e.message));
+    this.db.clearPendingRestart();
+    this.publish({ type: 'config_updated', ts: Date.now(), config: this.configState() });
+    const rt = this.engine.runtime();
+    const want = this.db.listKols();
+    for (const k of rt?.kols ?? []) if (!want.some((w) => w.id === k.id)) await this.engine.command({ type: 'kol.remove', id: k.id }).catch(() => {});
+    for (const k of want) await this.engine.command({ type: 'kol.upsert', kol: k }).catch(() => {});
+    this.rt = this.engine.runtime();
+    // Persist the engine's recent history (first run: simulator backfill).
+    if (this.rt) {
+      this.db.tx(() => {
+        for (const e of this.rt!.feed) this.db.insertBurst(e, null);
+        for (const c of this.rt!.closed) this.db.insertClosed(c);
+        for (const s of this.rt!.sweeps) this.db.upsertSweep(s);
+      });
+    }
+  }
+
+  // ---------- engine events ----------
+  private onEngine(e: AdapterEvent) {
+    const rt = this.rt;
+    if (e.type === 'connected') { this.rt = this.engine.runtime(); this.tripped.delete('engine_disconnected'); return; }
+    if (e.type === 'disconnected') {
+      this.rt = null;
+      this.trip('engine_disconnected', `Engine connection lost: ${e.reason}`);
+      this.publish({ type: 'engine_status', ts: Date.now(), status: 'PAUSED', reason: 'Engine disconnected', source: 'disconnected' });
+      return;
+    }
+    if (!rt) { if (e.type !== 'nonces') this.rt = this.engine.runtime(); if (!this.rt) return; }
+    const r = this.rt!;
+    switch (e.type) {
+      case 'nonces': r.nonces = e.nonces; this.publishConfig(); return;
+      case 'slot_tick':
+        r.chain = e.chain; r.balances = e.balances;
+        if (e.balances.sol > this.cfg.config.wallets.max_hot_wallet_sol) this.trip('hot_wallet_ceiling', `Hot wallet holds ${e.balances.sol.toFixed(3)} SOL, above the ${this.cfg.config.wallets.max_hot_wallet_sol} SOL ceiling`);
+        break;
+      case 'burst_dispatched':
+        r.feed = [e.burst, ...r.feed.filter((x) => x.id !== e.burst.id)].slice(0, 300);
+        this.db.insertBurst(e.burst, null);
+        break;
+      case 'tx_landed':
+        if (e.signature) this.db.raw.prepare('UPDATE bursts SET winning_sig = ? WHERE id = ?').run(e.signature, e.burstId);
+        break;
+      case 'position_updated':
+        r.positions = e.positions;
+        if (e.closed) { r.closed = [e.closed, ...r.closed].slice(0, 300); this.db.insertClosed(e.closed); }
+        break;
+      case 'sweep_executed': this.db.upsertSweep(e.sweep); break;
+      case 'treasury_updated':
+        r.sweeps = e.sweeps; r.inventory = e.inventory; r.rent = e.rent;
+        for (const s of e.sweeps.slice(0, 5)) this.db.upsertSweep(s);
+        break;
+      case 'engine_status': r.engine = { status: e.status, changedAt: e.ts, reason: e.reason }; break;
+      case 'kols_updated': {
+        r.kols = e.kols;
+        for (const k of e.kols) if (this.db.getKol(k.id)) this.db.updateKolStats(k);
+        this.publish({ type: 'kols_updated', ts: e.ts, kols: this.db.listKols() });
+        return;
+      }
+      case 'landers_updated': {
+        r.landers = e.landers;
+        const burn = e.landers.reduce((a, l) => a + l.tipPaidSol + l.revertCostSol, 0);
+        const now = Date.now();
+        this.burnSamples.push([now, burn]);
+        this.burnSamples = this.burnSamples.filter(([t]) => t >= now - 3_600_000);
+        const hour = burn - this.burnSamples[0][1];
+        const cap = this.cfg.config.landers.max_hourly_burn_sol;
+        if (hour > cap) this.trip('hourly_burn', `Gas + tip burn ${hour.toFixed(4)} SOL in the last hour exceeds the ${cap} SOL cap`);
+        break;
+      }
+      case 'session_updated': r.session = e.session; break;
+    }
+    this.publish(e as TelemetryEvent);
+  }
+
+  private trip(b: Breaker, reason: string) {
+    if (this.tripped.has(b)) return;
+    const st = this.rt?.engine.status;
+    if (b !== 'engine_disconnected' && st !== 'RUNNING' && st !== 'SHADOW') return;
+    this.tripped.add(b);
+    this.db.audit({ actor: 'circuit-breaker', ip: null, action: 'breaker.trip', target: b, detail: { reason } });
+    this.publish({ type: 'circuit_breaker_tripped', ts: Date.now(), breaker: b, reason });
+    if (b !== 'engine_disconnected') this.engine.command({ type: 'control', status: 'PAUSED' }).catch((e) => console.error('[breaker] pause failed', e));
+  }
+
+  private publish(e: TelemetryEvent) { this.emit('telemetry', e); }
+  private publishConfig() { this.publish({ type: 'config_updated', ts: Date.now(), config: this.configState() }); }
+
+  // ---------- reads ----------
+  private needRt(): EngineRuntime {
+    if (!this.rt) throw new HttpError(503, 'Engine not connected');
+    return this.rt;
+  }
+  /** Accepts real read-only mainnet telemetry (e.g. Helius WS feed) when the Rust engine is offline. */
+  ingestExternalEvent(e: TelemetryEvent, winningSig: string | null = null) {
+    if (this.rt) return; // Rust engine owns telemetry once connected
+    if (e.type === 'slot_tick') {
+      this.liveChain = e.chain;
+      this.liveBalances = e.balances;
+    } else if (e.type === 'burst_dispatched') {
+      this.db.insertBurst(e.burst, winningSig);
+    }
+    this.publish(e);
+  }
+
+  private emptyRuntime(): EngineRuntime {
+    return {
+      engine: { status: 'PAUSED', changedAt: this.startedAt, reason: 'Waiting for engine connection' },
+      chain: this.liveChain.slot > 0 ? this.liveChain : { slot: 0, shredLatencyMs: 0, nonces: { ready: 0, total: this.cfg.config.wallets.nonce_accounts.length }, ring: { used: 0, size: 64 } },
+      balances: this.liveBalances,
+      feed: [],
+      positions: [],
+      closed: [],
+      kols: [],
+      landers: [],
+      sweeps: [],
+      inventory: [],
+      rent: { accountsClosed: 0, reclaimedSol: 0, openSeededAccounts: 0, rentPerAccountSol: 0.00203928 },
+      session: { startedAt: this.startedAt, bursts: 0, fills: 0, txSent: 0, realizedSol: 0 },
+      nonces: [],
+    };
+  }
+  configState(): ConfigState {
+    return {
+      version: this.cfg.version, config: this.cfg.config, secrets: this.secrets.status(), pendingRestart: this.db.pendingRestart(),
+      updatedAt: this.cfg.updatedAt, nonces: this.rt?.nonces ?? ([] as NonceHealth[]),
+    };
+  }
+  kols() { return this.db.listKols(); }
+  positions() { const r = this.rt ?? this.emptyRuntime(); return { open: r.positions, closed: this.db.listClosed(200) }; }
+  treasury() {
+    const r = this.rt ?? this.emptyRuntime();
+    return { balances: r.balances, inventory: r.inventory, rent: r.rent, sweeps: this.db.listSweeps(200) };
+  }
+  nonces() { return { pool: this.rt?.nonces ?? [], target: this.cfg.config.wallets.nonce_target_pool_size, accounts: this.cfg.config.wallets.nonce_accounts }; }
+  snapshot(): StateSnapshot {
+    const r = this.rt ?? this.emptyRuntime();
+    const feed = this.db.listBursts({ limit: 150, kinds: ['kol_buy', 'launch', 'sell'] }).items.map(({ winningSig: _w, ...f }) => f);
+    return {
+      source: 'live', engineSource: this.engineSource, engine: r.engine, chain: r.chain, balances: r.balances, feed, positions: r.positions,
+      closed: this.db.listClosed(200), kols: this.db.listKols(), landers: r.landers, sweeps: this.db.listSweeps(60), inventory: r.inventory,
+      rent: r.rent, session: r.session, config: this.configState(),
+    };
+  }
+
+  // ---------- writes (all audited) ----------
+  async putConfig(baseVersion: number, input: unknown, a: Actor) {
+    if (baseVersion !== this.cfg.version) throw new HttpError(409, `The config changed since you opened it (now v${this.cfg.version}). Reload to get the latest.`, { currentVersion: this.cfg.version });
+    const v = validateConfig(input);
+    if (!v.ok) throw new HttpError(400, 'Validation failed', { fields: v.errors });
+    const changes = diffConfig(this.cfg.config, v.config);
+    if (changes.length === 0) return { version: this.cfg.version, appliedLive: [], pendingRestart: this.db.pendingRestart() };
+    const version = this.cfg.version + 1;
+    if (this.rt) {
+      try { await this.engine.command({ type: 'config.apply', version, config: v.config }); }
+      catch (e) {
+        const err = e as EngineError & { fields?: FieldErrors };
+        throw new HttpError(err.fields ? 400 : 502, `Engine rejected the config: ${err.message}`, err.fields ? { fields: err.fields } : {});
+      }
+    }
+    this.db.tx(() => {
+      this.db.insertConfig(version, v.config, a.actor, changes);
+      this.db.addPendingRestart(changes.filter((c) => c.restart).map((c) => c.path));
+      this.db.audit({ ...a, action: 'config.update', target: `v${version}`, detail: { baseVersion, changes } });
+    });
+    this.cfg = { version, config: v.config, updatedAt: Date.now() };
+    this.publishConfig();
+    return { version, appliedLive: changes.filter((c) => !c.restart).map((c) => c.path), pendingRestart: this.db.pendingRestart() };
+  }
+
+  setSecret(id: string, value: string, a: Actor) {
+    this.secrets.setFromApi(id, value);
+    this.db.audit({ ...a, action: 'secret.set', target: id, detail: null }); // never the value
+    this.publishConfig();
+  }
+  clearSecret(id: string, a: Actor) {
+    this.secrets.clearFromApi(id);
+    this.db.audit({ ...a, action: 'secret.clear', target: id, detail: null });
+    this.publishConfig();
+  }
+
+  async createKol(input: z.infer<typeof KolInput>, a: Actor) {
+    if (this.db.listKols().some((k) => k.pubkey === input.pubkey)) throw new HttpError(409, 'That wallet is already on the watchlist');
+    const kol: Kol = { id: `kol_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, ...input, stats: { wins: 0, losses: 0, realizedSol: 0, lastSeenSlot: null } };
+    this.db.upsertKol(kol);
+    this.db.audit({ ...a, action: 'kol.create', target: kol.id, detail: input });
+    await this.engine.command({ type: 'kol.upsert', kol }).catch((e) => console.warn('[control] engine kol sync:', e.message));
+    this.publish({ type: 'kols_updated', ts: Date.now(), kols: this.db.listKols() });
+    return kol;
+  }
+  async patchKol(id: string, patch: z.infer<typeof KolPatch>, a: Actor) {
+    const cur = this.db.getKol(id);
+    if (!cur) throw new HttpError(404, 'Unknown KOL');
+    if (patch.pubkey && this.db.listKols().some((k) => k.pubkey === patch.pubkey && k.id !== id)) throw new HttpError(409, 'That wallet is already on the watchlist');
+    const next: Kol = { ...cur, ...patch };
+    this.db.upsertKol(next);
+    this.db.audit({ ...a, action: 'kol.update', target: id, detail: patch });
+    await this.engine.command({ type: 'kol.upsert', kol: next }).catch((e) => console.warn('[control] engine kol sync:', e.message));
+    this.publish({ type: 'kols_updated', ts: Date.now(), kols: this.db.listKols() });
+    return next;
+  }
+  async deleteKol(id: string, a: Actor) {
+    if (!this.db.deleteKol(id)) throw new HttpError(404, 'Unknown KOL');
+    this.db.audit({ ...a, action: 'kol.delete', target: id, detail: null });
+    await this.engine.command({ type: 'kol.remove', id }).catch((e) => console.warn('[control] engine kol sync:', e.message));
+    this.publish({ type: 'kols_updated', ts: Date.now(), kols: this.db.listKols() });
+  }
+
+  async control(input: z.infer<typeof ControlInput>, a: Actor) {
+    const st = this.needRt().engine.status;
+    if (input.action === 'emergency_kill_switch') {
+      const reason = input.reason || 'Manual kill from terminal';
+      await this.engine.command({ type: 'kill', reason });
+      this.db.audit({ ...a, action: 'engine.kill', target: null, detail: { reason } });
+      return { status: 'KILLED' as const };
+    }
+    const status = ({ start: 'RUNNING', pause: 'PAUSED', shadow_mode: 'SHADOW' } as const)[input.action];
+    if (st === 'KILLED' && status !== 'PAUSED') throw new HttpError(409, 'Kill switch engaged: re-arm to PAUSED first');
+    if (status !== 'PAUSED' && this.tripped.size && !this.tripped.has('engine_disconnected')) {
+      // Operator explicitly resumes after a breaker trip: clear the latch, keep an audit trail.
+      this.db.audit({ ...a, action: 'breaker.reset', target: [...this.tripped].join(','), detail: null });
+      this.tripped.clear();
+    }
+    await this.engine.command({ type: 'control', status });
+    this.db.audit({ ...a, action: `engine.${input.action}`, target: null, detail: { from: st, to: status, reason: input.reason ?? null } });
+    return { status };
+  }
+
+  async sell(mint: string, pct: SellPct, a: Actor) {
+    const r = this.needRt();
+    if (!r.positions.some((p) => p.mint === mint)) throw new HttpError(404, 'No open position for that mint');
+    try { await this.engine.command({ type: 'sell', mint, pct }); }
+    catch (e) { throw new HttpError((e as EngineError).status ?? 502, (e as Error).message); }
+    this.db.audit({ ...a, action: 'position.sell', target: mint, detail: { pct } });
+    return { accepted: true, mint, pct };
+  }
+
+  async nonce(input: z.infer<typeof NonceInput>, a: Actor) {
+    const result = await this.engine.command({ type: 'nonce', action: input.action, count: input.count, pubkey: input.pubkey })
+      .catch((e: Error) => { throw new HttpError(422, e.message); });
+    if (input.action === 'create' && this.rt) {
+      // The engine created accounts: record them in the config as a new version.
+      const accounts = this.rt.nonces.map((n) => n.pubkey);
+      const next = structuredClone(this.cfg.config);
+      next.wallets.nonce_accounts = accounts;
+      if (diffConfig(this.cfg.config, next).length) await this.putConfig(this.cfg.version, next, { ...a, actor: `${a.actor} (nonce.create)` });
+    }
+    this.db.audit({ ...a, action: `nonce.${input.action}`, target: input.pubkey ?? null, detail: { count: input.count ?? null, result } });
+    return result ?? { ok: true };
+  }
+}
