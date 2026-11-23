@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 CREATE INDEX IF NOT EXISTS audit_ts ON audit(id DESC);
 CREATE TABLE IF NOT EXISTS revoked_tokens (jti TEXT PRIMARY KEY, exp INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
 type Row = Record<string, unknown>;
@@ -96,12 +97,17 @@ export class Db {
   deleteKol(id: string) { return Number(this.raw.prepare('DELETE FROM kols WHERE id=?').run(id).changes) > 0; }
 
   // ---------- bursts ----------
+  private burstWrites = 0;
   insertBurst(e: FeedEvent, winningSig: string | null) {
     this.ensureBurstImageCol();
     this.raw.prepare(`INSERT INTO bursts (id, ts, slot, kind, kol_id, mint, symbol, image, venue, size_sol, fanout, winner, winning_sig, cu_used, reverts, outcome, note)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET image = COALESCE(excluded.image, bursts.image)`)
       .run(e.id, e.ts, e.slot, e.kind, e.kolId, e.mint, e.symbol, e.image ?? null, e.venue, e.sizeSol, e.fanout, e.winner, winningSig, e.cuUsed, JSON.stringify(e.reverts), e.outcome, e.note ?? null);
+    // Keep only the latest 200 live signals so SQLite never bloats or slows down the API.
+    if (++this.burstWrites % 25 === 0) {
+      this.raw.exec(`DELETE FROM bursts WHERE id NOT IN (SELECT id FROM bursts ORDER BY ts DESC, id DESC LIMIT 200)`);
+    }
   }
   private burstImageColReady = false;
   private ensureBurstImageCol() {
@@ -163,4 +169,13 @@ export class Db {
   revoke(jti: string, exp: number) { this.raw.prepare('INSERT OR IGNORE INTO revoked_tokens (jti, exp) VALUES (?, ?)').run(jti, exp); }
   isRevoked(jti: string) { return !!this.raw.prepare('SELECT 1 FROM revoked_tokens WHERE jti=?').get(jti); }
   pruneRevoked() { this.raw.prepare('DELETE FROM revoked_tokens WHERE exp < ?').run(Math.floor(Date.now() / 1000)); }
+
+  // ---------- key/value meta ----------
+  getMeta(key: string): string | null {
+    const r = this.raw.prepare('SELECT value FROM meta WHERE key = ?').get(key) as Row | undefined;
+    return r ? String(r.value) : null;
+  }
+  setMeta(key: string, value: string) {
+    this.raw.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  }
 }

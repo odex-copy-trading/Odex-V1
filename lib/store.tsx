@@ -28,7 +28,7 @@ type Action =
   | { type: 'event'; e: TelemetryEvent }
   | { type: 'reset' };
 
-const upsert = <T extends { id: string }>(xs: T[], x: T, max = 300) => [x, ...xs.filter((y) => y.id !== x.id)].slice(0, max);
+const upsert = <T extends { id: string }>(xs: T[], x: T, max = 200) => [x, ...xs.filter((y) => y.id !== x.id)].slice(0, max);
 
 function reducer(s: TerminalState, a: Action): TerminalState {
   if (a.type === 'conn') return { ...s, connection: a.connection };

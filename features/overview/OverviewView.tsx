@@ -178,7 +178,7 @@ export function OverviewView() {
           {loading ? <TableSkeleton rows={8} cols={6} />
             : tab === 'positions' ? <PositionsTab rows={bySource(open, source)} unit={unit} />
             : tab === 'closed' ? <ClosedTab rows={bySource(closedP, source).slice(0, 100)} unit={unit} />
-            : <SignalsTab rows={bySource(signalsP, source).slice(0, 100)} />}
+            : <SignalsTab rows={bySource(signalsP, source).slice(0, 200)} />}
         </div>
       </section>
     </div>

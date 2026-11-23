@@ -116,6 +116,10 @@ export class ControlPlane extends EventEmitter {
     const want = this.db.listKols();
     for (const k of rt?.kols ?? []) if (!want.some((w) => w.id === k.id)) await this.engine.command({ type: 'kol.remove', id: k.id }).catch(() => {});
     for (const k of want) await this.engine.command({ type: 'kol.upsert', kol: k }).catch(() => {});
+    // Auto-restore Paper Mode (SHADOW) across restarts/redeploys (never auto-resume live RUNNING for safety).
+    if (this.db.getMeta('engine_mode') === 'SHADOW' && rt?.engine.status === 'PAUSED') {
+      await this.engine.command({ type: 'control', status: 'SHADOW' }).catch(() => {});
+    }
     this.rt = this.engine.runtime();
     // Persist the engine's recent history (first run: simulator backfill).
     if (this.rt) {
@@ -148,7 +152,7 @@ export class ControlPlane extends EventEmitter {
         break;
       case 'burst_dispatched':
         this.lastEngineBurstAt = Date.now();
-        r.feed = [e.burst, ...r.feed.filter((x) => x.id !== e.burst.id)].slice(0, 300);
+        r.feed = [e.burst, ...r.feed.filter((x) => x.id !== e.burst.id)].slice(0, 200);
         this.db.insertBurst(e.burst, null);
         break;
       case 'tx_landed':
@@ -254,7 +258,7 @@ export class ControlPlane extends EventEmitter {
   nonces() { return { pool: this.rt?.nonces ?? [], target: this.cfg.config.wallets.nonce_target_pool_size, accounts: this.cfg.config.wallets.nonce_accounts }; }
   snapshot(): StateSnapshot {
     const r = this.rt ?? this.emptyRuntime();
-    const feed = this.db.listBursts({ limit: 150, kinds: ['kol_buy', 'launch', 'sell'] }).items.map(({ winningSig: _w, ...f }) => f);
+    const feed = this.db.listBursts({ limit: 200, kinds: ['kol_buy', 'launch', 'sell'] }).items.map(({ winningSig: _w, ...f }) => f);
     return {
       source: 'live', engineSource: this.engineSource, engine: r.engine, chain: r.chain, balances: r.balances, feed, positions: r.positions,
       closed: this.db.listClosed(2000), kols: this.db.listKols(), landers: r.landers, sweeps: this.db.listSweeps(60), inventory: r.inventory,
@@ -341,6 +345,7 @@ export class ControlPlane extends EventEmitter {
       this.tripped.clear();
     }
     await this.engine.command({ type: 'control', status });
+    this.db.setMeta('engine_mode', status);
     this.db.audit({ ...a, action: `engine.${input.action}`, target: null, detail: { from: st, to: status, reason: input.reason ?? null } });
     return { status };
   }

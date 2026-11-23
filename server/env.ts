@@ -53,7 +53,8 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): Env {
     console.warn('[env] DEV API KEY enabled for local development (loopback only)');
   }
 
-  const dataDir = path.resolve(e.WHAL_DATA_DIR ?? '.data');
+  // Automatically persist SQLite & secrets on Railway Volume if one is attached (any mount path).
+  const dataDir = path.resolve(e.WHAL_DATA_DIR?.trim() || e.RAILWAY_VOLUME_MOUNT_PATH?.trim() || '.data');
   return {
     host,
     port: Number(e.PORT ?? e.WHAL_PORT ?? 8787),
