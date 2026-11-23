@@ -45,6 +45,9 @@ export class SolanaLiveFeed {
   private paperTimer: ReturnType<typeof setInterval> | null = null;
   private paperPriceTimer: ReturnType<typeof setInterval> | null = null;
   private curvePriceTimer: ReturnType<typeof setInterval> | null = null;
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private lastPumpMsgAt = 0;
+  private lastSlotMsgAt = 0;
   private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; instantTpFired: boolean; firedSteps: Set<number> }>();
   private watchedKolKeys = new Set<string>();
   private solUsd = 0;
@@ -70,6 +73,9 @@ export class SolanaLiveFeed {
     // Fast DexScreener fallback (1.5s) for graduated PumpSwap/Raydium tokens
     this.paperPriceTimer = setInterval(() => void this.pollPaperPricesFromDexScreener(), 1_500);
     this.paperPriceTimer.unref();
+    // Zombie WebSocket watchdog: auto-reconnects if PumpPortal or Solana slot WS goes silent
+    this.watchdogTimer = setInterval(() => this.checkStaleStreams(), 15_000);
+    this.watchdogTimer.unref();
     this.cp.on('telemetry', (e: { type: string; positions?: Position[] }) => {
       if (e.type === 'config_updated') this.reload();
       if (e.type === 'kols_updated') this.syncKolSubscriptions();
@@ -88,6 +94,7 @@ export class SolanaLiveFeed {
     if (this.paperTimer) clearInterval(this.paperTimer);
     if (this.curvePriceTimer) clearInterval(this.curvePriceTimer);
     if (this.paperPriceTimer) clearInterval(this.paperPriceTimer);
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     this.slotWs?.close();
     this.pumpWs?.close();
     this.slotWs = null;
@@ -120,11 +127,13 @@ export class SolanaLiveFeed {
 
     ws.on('open', () => {
       this.slotRetry = 0;
+      this.lastSlotMsgAt = Date.now();
       console.log(`[solana-feed] Slot stream connected (${this.usePublicSlotFallback ? 'public mainnet-beta' : 'configured RPC'})`);
       ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'slotSubscribe', params: [] }));
     });
 
     ws.on('message', (raw) => {
+      this.lastSlotMsgAt = Date.now();
       let msg: Record<string, unknown>;
       try { msg = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
       if (msg.method === 'slotNotification') {
@@ -179,6 +188,7 @@ export class SolanaLiveFeed {
 
     ws.on('open', () => {
       this.pumpRetry = 0;
+      this.lastPumpMsgAt = Date.now();
       console.log('[solana-feed] Connected to live mainnet Pump.fun new-token stream');
       ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
       this.syncKolSubscriptions();
@@ -188,6 +198,7 @@ export class SolanaLiveFeed {
     });
 
     ws.on('message', (raw) => {
+      this.lastPumpMsgAt = Date.now();
       let msg: {
         signature?: string;
         mint?: string;
@@ -454,11 +465,31 @@ export class SolanaLiveFeed {
     } catch { /* ignore transient RPC timeouts */ }
   }
 
+  /** Watchdog: terminates and reconnects zombie/half-open WebSockets that stop delivering messages. */
+  private checkStaleStreams() {
+    if (this.stopped) return;
+    const now = Date.now();
+    if (this.pumpWs?.readyState === WebSocket.OPEN && this.lastPumpMsgAt > 0 && now - this.lastPumpMsgAt > 30_000) {
+      console.warn('[solana-feed] Pump.fun WS stale >30s; terminating and reconnecting');
+      const old = this.pumpWs;
+      this.pumpWs = null;
+      try { old.terminate(); } catch { /* ignore */ }
+      this.connectPumpStream();
+    }
+    if (this.slotWs?.readyState === WebSocket.OPEN && this.lastSlotMsgAt > 0 && now - this.lastSlotMsgAt > 20_000) {
+      console.warn('[solana-feed] Slot WS stale >20s; terminating and reconnecting');
+      const old = this.slotWs;
+      this.slotWs = null;
+      try { old.terminate(); } catch { /* ignore */ }
+      this.connectSlotStream();
+    }
+  }
+
   /** Computes exact constant-product AMM sell proceeds after Pump.fun 1% fee & SWQoS execution fee. */
   private calcAmmSellProceeds(sellTokens: number, markPrice: number, vSol: number): number {
     const curveSol = Math.max(30, vSol);
     const curveTokens = curveSol / markPrice;
-    const grossSolOut = (curveSol * sellTokens) / (curveTokens + sellTokens);
+    const grossSolOut = Math.min(curveSol * 0.85, (curveSol * sellTokens) / (curveTokens + sellTokens));
     const sellFeeSol = this.cp.estimateExecutionFeeSol();
     return Math.max(0, grossSolOut * 0.99 - sellFeeSol);
   }
@@ -483,11 +514,13 @@ export class SolanaLiveFeed {
       clearTimeout(t);
       if (!r.ok) return;
       const data = (await r.json()) as {
-        pairs?: { baseToken?: { address?: string }; priceNative?: string; liquidity?: { quote?: number } }[];
+        pairs?: { chainId?: string; baseToken?: { address?: string }; priceNative?: string; liquidity?: { quote?: number; usd?: number } }[];
       };
       if (!Array.isArray(data.pairs)) return;
       const bestByMint = new Map<string, { price: number; quoteLiq?: number }>();
       for (const pair of data.pairs) {
+        if (pair.chainId && pair.chainId !== 'solana') continue;
+        if (pair.liquidity?.usd != null && pair.liquidity.usd < 1000) continue; // ignore spoofed micro-liquidity pools
         const mint = pair.baseToken?.address;
         const price = Number(pair.priceNative);
         if (!mint || !Number.isFinite(price) || price <= 0) continue;
@@ -505,6 +538,9 @@ export class SolanaLiveFeed {
     const entry = this.paper.get(mint);
     if (!entry || !Number.isFinite(price) || price <= 0) return false;
     const prev = entry.pos.price;
+    // Outlier / decimal-mismatch sanity guard: reject impossible single-tick >8x spikes or <0.05x glitches
+    if (prev > 0 && (price / prev > 8 || price / prev < 0.05)) return false;
+    if (entry.pos.entryPrice > 0 && price / entry.pos.entryPrice > 25 && (!vSol || vSol < 50)) return false;
     const changed = prev <= 0 || Math.abs(price - prev) / prev > 1e-6;
     if (!changed) return false;
     entry.pos = { ...entry.pos, price };

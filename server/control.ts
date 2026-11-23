@@ -98,7 +98,7 @@ export class ControlPlane extends EventEmitter {
       this.rt.session = { ...this.rt.session, fills: this.rt.session.fills + 1, bursts: this.rt.session.bursts + 1 };
     }
     if (closed) {
-      this.rt.closed = [closed, ...this.rt.closed.filter((c) => c.id !== closed.id)].slice(0, 300);
+      this.rt.closed = [closed, ...this.rt.closed.filter((c) => c.id !== closed.id)].slice(0, 2000);
       this.db.insertClosed(closed);
       const net = closed.proceedsSol - closed.entrySol;
       this.rt.session = { ...this.rt.session, realizedSol: +(this.rt.session.realizedSol + net).toFixed(6) };
@@ -257,7 +257,7 @@ export class ControlPlane extends EventEmitter {
     const feed = this.db.listBursts({ limit: 150, kinds: ['kol_buy', 'launch', 'sell'] }).items.map(({ winningSig: _w, ...f }) => f);
     return {
       source: 'live', engineSource: this.engineSource, engine: r.engine, chain: r.chain, balances: r.balances, feed, positions: r.positions,
-      closed: this.db.listClosed(200), kols: this.db.listKols(), landers: r.landers, sweeps: this.db.listSweeps(60), inventory: r.inventory,
+      closed: this.db.listClosed(2000), kols: this.db.listKols(), landers: r.landers, sweeps: this.db.listSweeps(60), inventory: r.inventory,
       rent: r.rent, session: r.session, config: this.configState(),
     };
   }
