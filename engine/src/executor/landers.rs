@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
-use crate::ingest::{PubkeyBytes, TriggerEvent};
-use super::builder::{BuildVariantParams, BuiltTransaction, TxBuilder, TxVersion, V1TransactionConfig};
+use crate::ingest::{PubkeyBytes, TriggerEvent, TriggerKind, Venue};
+use super::builder::{
+    BuildVariantParams, BuiltTransaction, TxBuilder, TxVersion, V1TransactionConfig,
+    TOKEN_2022_PROGRAM_ID,
+};
 use super::nonce::NoncePool;
 use super::wire::{serialize_and_sign_tx, HotWalletSigner};
 
@@ -206,6 +209,21 @@ impl LanderFanOut {
                     .priority_fee_lamports
                     .saturating_add((idx as u64) * 1_000);
 
+                let is_token_2022_mint = trigger.dex_accounts.contains(&TOKEN_2022_PROGRAM_ID);
+                let use_standalone_guard_for_pumpswap = trigger.venue == Venue::PumpSwap;
+                // Safe slippage floor: for Pump.fun 0-block launches (known initial 30 SOL / 1.073B curve),
+                // compute AMM min_tokens_out with a 12% slippage tolerance; otherwise keep 1 so valid KOL fills never falsely revert.
+                let min_tokens_out = match (&trigger.venue, &trigger.kind) {
+                    (Venue::PumpFun, TriggerKind::ZeroBlockLaunch { dev_buy_lamports, .. }) => {
+                        let base_v_sol: u128 = 30_000_000_000u128.saturating_add(*dev_buy_lamports as u128);
+                        let base_v_tok: u128 = 1_073_000_000_000_000u128; // 1.073B tokens (6 decimals)
+                        let buy_lamports: u128 = 500_000_000; // conservative 0.5 SOL floor reference
+                        let est_out = (base_v_tok.saturating_mul(buy_lamports)) / base_v_sol.saturating_add(buy_lamports);
+                        ((est_out * 88) / 100).max(1) as u64
+                    }
+                    _ => 1,
+                };
+
                 let params = BuildVariantParams {
                     version,
                     v1_config: v1_cfg,
@@ -216,9 +234,9 @@ impl LanderFanOut {
                     tip_account,
                     tip_lamports,
                     buy_slot_ttl,
-                    is_token_2022_mint: false,
-                    use_standalone_guard_for_pumpswap: false,
-                    min_tokens_out: 1,
+                    is_token_2022_mint,
+                    use_standalone_guard_for_pumpswap,
+                    min_tokens_out,
                 };
                 let tx = self.builder.build_buy_tx(trigger, &params);
                 variants.push(VariantDispatch {

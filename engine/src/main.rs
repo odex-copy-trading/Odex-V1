@@ -678,8 +678,19 @@ async fn main() {
                     if let Ok(body) = resp.json::<Value>().await {
                         if let Some(vals) = body.pointer("/result/value").and_then(|v| v.as_array()) {
                             for (i, acc) in vals.iter().enumerate() {
-                                if let (Some(pk), Some(lamports)) = (accounts.get(i), acc.get("lamports").and_then(|v| v.as_u64())) {
-                                    kol_balances.set(*pk, lamports);
+                                if let Some(pk) = accounts.get(i) {
+                                    let owner = acc.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+                                    let is_token_acc = owner == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                                        || owner == "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+                                    if is_token_acc {
+                                        if let Some(b64) = acc.pointer("/data/0").and_then(|v| v.as_str()) {
+                                            if let Ok(buf) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                                                kol_balances.update_from_spl_data(*pk, &buf);
+                                            }
+                                        }
+                                    } else if let Some(lamports) = acc.get("lamports").and_then(|v| v.as_u64()) {
+                                        kol_balances.set(*pk, lamports);
+                                    }
                                 }
                             }
                         }
