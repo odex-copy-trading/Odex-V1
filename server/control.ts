@@ -75,6 +75,19 @@ export class ControlPlane extends EventEmitter {
   get engineSource(): EngineSource { return this.rt ? this.engine.source : 'disconnected'; }
   get engineStatus(): EngineRuntime['engine']['status'] { return this.rt?.engine.status ?? 'PAUSED'; }
 
+  /** Estimates real Solana tx + priority + SWQoS lander tip + duplicate-revert fee in SOL from current Settings. */
+  estimateExecutionFeeSol(): number {
+    const l = this.cfg.config.landers;
+    const enabled = Object.entries(l.providers).filter(([, p]) => p.enabled && p.fanout > 0);
+    const totalFanout = enabled.reduce((a, [, p]) => a + p.fanout, 0);
+    const tipped = enabled.filter(([id]) => id !== 'tpu').map(([, p]) => (p.min_tip_sol + p.max_tip_sol) / 2);
+    const landerTip = tipped.length ? Math.min(...tipped) : 0;
+    const prioritySol = (l.tx.priority_fee_lamports || 0) / 1e9;
+    const baseFeeSol = 0.000_005;
+    const dupRevertsSol = Math.max(0, totalFanout - 1) * 0.000_006;
+    return +(baseFeeSol + prioritySol + landerTip + dupRevertsSol).toFixed(6);
+  }
+
   /** Updates Shadow-mode paper positions & optional closed trade using real mainnet prices. */
   updatePaperState(positions: Position[], closed?: ClosedPosition, openedNew = false) {
     if (!this.rt) return;
@@ -337,7 +350,9 @@ export class ControlPlane extends EventEmitter {
     if (!pos) throw new HttpError(404, 'No open position for that mint');
     if (pos.id.startsWith('paper_')) {
       const sellTokens = pos.tokens * (pct / 100);
-      const proceeds = sellTokens * pos.price;
+      const sellFeeSol = this.estimateExecutionFeeSol();
+      // Pump.fun 1% protocol fee + 0.5% slippage + Solana/SWQoS sell tx fees
+      const proceeds = Math.max(0, sellTokens * pos.price * 0.985 - sellFeeSol);
       const totalProceeds = (pos.proceedsSol ?? 0) + proceeds;
       let closed: ClosedPosition | undefined;
       if (pct >= 100 || pos.tokens - sellTokens <= 1e-6) {

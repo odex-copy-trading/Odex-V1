@@ -352,11 +352,13 @@ export class SolanaLiveFeed {
 
   private openPaperPosition(ev: FeedEvent, desiredBuySol: number, vSol?: number, vTokens?: number, ws?: WebSocket) {
     const cfg = this.cp.configState().config;
-    const entrySol = Math.max(0.01, Math.min(100, desiredBuySol || cfg.strategy.default_buy_sol || 1));
+    const buySol = Math.max(0.01, Math.min(100, desiredBuySol || cfg.strategy.default_buy_sol || 1));
+    const buyFeeSol = this.cp.estimateExecutionFeeSol();
+    const entrySol = +(buySol + buyFeeSol).toFixed(6);
     const rawPrice = vSol && vTokens && vSol > 0 && vTokens > 0 ? vSol / vTokens : 30 / 1_073_000_000;
-    // Apply realistic 0.5% simulated fill slippage so paper PnL matches real mainnet fills.
-    const entryPrice = rawPrice * 1.005;
-    const tokens = entrySol / entryPrice;
+    // Real mainnet buy cost: Pump.fun 1% protocol fee + 0.5% slippage + SWQoS/priority/revert fees in entrySol.
+    const entryPrice = rawPrice * 1.015;
+    const tokens = buySol / entryPrice;
     const pos: Position = {
       id: `paper_${ev.mint.slice(0, 12)}`,
       mint: ev.mint,
@@ -376,7 +378,7 @@ export class SolanaLiveFeed {
       pendingSell: null,
     };
     this.paper.set(ev.mint, { pos, peakPrice: rawPrice, firedSteps: new Set() });
-    console.log(`[solana-feed] Shadow paper buy opened: $${ev.symbol} (${entrySol} SOL @ ${entryPrice.toExponential(3)})`);
+    console.log(`[solana-feed] Shadow paper buy opened: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee @ ${entryPrice.toExponential(3)})`);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [ev.mint] }));
     }
@@ -456,7 +458,8 @@ export class SolanaLiveFeed {
           return;
         }
         const sellTokens = entry.pos.tokens * (step.sell_pct / 100);
-        const proceeds = sellTokens * price * 0.995;
+        const sellFeeSol = this.cp.estimateExecutionFeeSol();
+        const proceeds = Math.max(0, sellTokens * price * 0.985 - sellFeeSol);
         entry.pos = {
           ...entry.pos,
           tokens: entry.pos.tokens - sellTokens,
@@ -473,7 +476,9 @@ export class SolanaLiveFeed {
     const entry = this.paper.get(mint);
     if (!entry) return;
     this.paper.delete(mint);
-    const remainingProceeds = entry.pos.tokens * entry.pos.price * 0.995;
+    const sellFeeSol = this.cp.estimateExecutionFeeSol();
+    // Pump.fun 1% protocol fee + 0.5% slippage + SWQoS/priority/revert sell fees
+    const remainingProceeds = Math.max(0, entry.pos.tokens * entry.pos.price * 0.985 - sellFeeSol);
     const totalProceeds = +((entry.pos.proceedsSol ?? 0) + remainingProceeds).toFixed(6);
     const closed: ClosedPosition = {
       id: `cl_${entry.pos.id}_${Date.now().toString(36)}`,
@@ -511,7 +516,8 @@ export class SolanaLiveFeed {
             break;
           }
           const sellTokens = entry.pos.tokens * (step.sell_pct / 100);
-          const proceeds = sellTokens * entry.pos.price * 0.995;
+          const sellFeeSol = this.cp.estimateExecutionFeeSol();
+          const proceeds = Math.max(0, sellTokens * entry.pos.price * 0.985 - sellFeeSol);
           entry.pos = {
             ...entry.pos,
             tokens: entry.pos.tokens - sellTokens,
