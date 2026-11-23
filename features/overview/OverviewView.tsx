@@ -38,7 +38,12 @@ export function OverviewView() {
   const loading = state.connection === 'connecting';
   const px = state.balances.solUsd;
 
-  const open = state.positions;
+  const nowMs = Date.now();
+  const rangeIncludesNow = dateRange.end >= nowMs - 60_000;
+  const open = useMemo(
+    () => (rangeIncludesNow ? state.positions : state.positions.filter((p) => p.openedAt >= dateRange.start && p.openedAt <= dateRange.end)),
+    [state.positions, dateRange, rangeIncludesNow],
+  );
   const closedP = useMemo(
     () => state.closed.filter((c) => c.closedAt >= dateRange.start && c.closedAt <= dateRange.end),
     [state.closed, dateRange],
@@ -49,16 +54,24 @@ export function OverviewView() {
   );
   const bySource = <T extends { kolId: string | null }>(xs: T[], s: Source) => (s === 'all' ? xs : xs.filter((x) => (s === 'kol' ? !!x.kolId : !x.kolId)));
 
-  // KPIs, scoped to the selected period like the reference design
+  // All KPIs synced to the selected dateRange
   const realizedSol = closedP.reduce((a, c) => a + c.proceedsSol - c.entrySol, 0);
-  const realizedUsd = closedP.reduce((a, c) => a + (c.proceedsSol - c.entrySol) * c.solUsd, 0);
+  const realizedUsd = closedP.reduce((a, c) => a + (c.proceedsSol - c.entrySol) * (c.solUsd || px), 0);
   const openValue = open.reduce((a, p) => a + p.tokens * p.price, 0);
-  const openCost = open.reduce((a, p) => a + p.entrySol * (p.tokens / p.initialTokens), 0);
-  const unrealSol = openValue - openCost;
+  const openCost = open.reduce((a, p) => a + p.entrySol * (p.initialTokens > 0 ? p.tokens / p.initialTokens : 0), 0);
+  const unrealSol = open.reduce((a, p) => a + (p.tokens * p.price + (p.proceedsSol ?? 0) - p.entrySol), 0);
   const pnlSol = realizedSol + unrealSol;
   const pnlUsd = realizedUsd + unrealSol * px;
   const isShadow = state.engine.status === 'SHADOW';
-  const total = isShadow ? computePaperEquitySol(state, paperStartSol) * px : portfolioUsd(state);
+  // Paper equity as of the end of the selected date range (so Yesterday / custom ranges reflect that period's ending balance)
+  const paperBalanceAtRangeEndSol = useMemo(() => {
+    if (rangeIncludesNow) return computePaperEquitySol(state, paperStartSol);
+    const closedUpToEnd = state.closed
+      .filter((c) => c.id.startsWith('cl_paper_') && c.closedAt <= dateRange.end)
+      .reduce((a, c) => a + (c.proceedsSol - c.entrySol), 0);
+    return Math.max(0, paperStartSol + closedUpToEnd);
+  }, [state, paperStartSol, dateRange.end, rangeIncludesNow]);
+  const total = isShadow ? paperBalanceAtRangeEndSol * px : portfolioUsd(state);
   const won = closedP.filter((c) => c.proceedsSol > c.entrySol).length;
   const winRate = closedP.length ? (won / closedP.length) * 100 : null;
   const enabled = state.kols.filter((k) => k.enabled).length;
