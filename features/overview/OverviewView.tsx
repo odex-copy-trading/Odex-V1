@@ -1,8 +1,7 @@
 'use client';
 
 import { useMemo, useState, type ReactNode } from 'react';
-import Link from 'next/link';
-import { Snowflake, Upload, Zap } from '@/components/icons';
+import { Snowflake, Upload } from '@/components/icons';
 import { Badge, Skeleton, cx } from '@/components/ui';
 import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
 import { portfolioUsd, useCommand, useTerminal } from '@/lib/store';
@@ -113,15 +112,14 @@ export function OverviewView() {
           <h1 className="text-[2.25rem] font-bold leading-tight tracking-tight">Overview</h1>
           <p className="mt-1 text-[0.95rem] text-fg2">{dateStr} · Watching {enabled} KOL{enabled === 1 ? '' : 's'}</p>
         </div>
-        <div className="flex flex-wrap gap-2.5">
+        <div className="flex flex-wrap gap-2">
           <button type="button" role="switch" aria-checked={shadow} disabled={busy || killed || loading || !engineOnline}
-            title={!engineOnline ? 'Connect the Rust engine to toggle shadow mode' : undefined}
-            onClick={() => run({ type: 'engine.set', status: shadow ? 'RUNNING' : 'SHADOW' }, shadow ? 'Shadow mode off: engine running' : 'Shadow mode on: nothing is sent')}
-            className="inline-flex h-10 items-center gap-3 rounded-[0.75rem] border border-line bg-card pl-4 pr-2.5 text-[0.95rem] font-medium hover:bg-raised disabled:cursor-not-allowed disabled:opacity-50">
-            Shadow mode
-            <span className={cx('relative h-6 w-10 rounded-full transition-colors', shadow ? 'bg-emerald-500' : 'bg-line2')}><span className={cx('absolute top-0.5 size-5 rounded-full bg-white transition-[left]', shadow ? 'left-[1.15rem]' : 'left-0.5')} /></span>
+            title={!engineOnline ? 'Connect the Rust engine to toggle Paper Mode' : undefined}
+            onClick={() => run({ type: 'engine.set', status: shadow ? 'RUNNING' : 'SHADOW' }, shadow ? 'Paper Mode off: engine running' : 'Paper Mode on: nothing is sent')}
+            className="inline-flex h-9 items-center gap-2.5 rounded-[0.68rem] border border-line bg-card pl-3 pr-2 text-[0.84rem] font-medium hover:bg-raised disabled:cursor-not-allowed disabled:opacity-50">
+            Paper Mode
+            <span className={cx('relative h-5 w-9 rounded-full transition-colors', shadow ? 'bg-emerald-500' : 'bg-line2')}><span className={cx('absolute top-0.5 size-4 rounded-full bg-white transition-[left]', shadow ? 'left-[1.1rem]' : 'left-0.5')} /></span>
           </button>
-          <Link href="/execution" className="inline-flex h-10 items-center gap-2 rounded-[0.75rem] border border-line bg-card px-4 text-[0.95rem] font-medium hover:bg-raised"><Zap className="size-4" aria-hidden />Landers</Link>
           <PnlCalendarButton closed={state.closed} defaultPaper={shadow} />
           <DateRangePicker value={dateRange} onChange={setDateRange} />
         </div>

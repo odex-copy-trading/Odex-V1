@@ -27,11 +27,28 @@ function SolanaMark({ className = 'size-5' }: { className?: string }) {
   );
 }
 
+function UsdcMark({ className = 'size-5' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 32 32" className={cx(className, 'shrink-0')} aria-hidden>
+      <circle cx="16" cy="16" r="16" fill="#2775CA" />
+      <path
+        fill="#FFFFFF"
+        d="M20.022 18.124c0-2.124-1.28-2.852-3.84-3.156-1.828-.243-2.193-.728-2.193-1.578 0-.85.61-1.396 1.828-1.396 1.097 0 1.707.364 2.011 1.275a.458.458 0 0 0 .427.303h.975a.416.416 0 0 0 .427-.425v-.06a3.04 3.04 0 0 0-2.743-2.489V9.142c0-.243-.183-.425-.487-.486h-.915c-.243 0-.426.182-.487.486v1.396c-1.829.242-2.986 1.456-2.986 2.974 0 2.002 1.218 2.791 3.778 3.095 1.707.303 2.255.668 2.255 1.639 0 .97-.853 1.638-2.011 1.638-1.585 0-2.133-.667-2.316-1.578-.06-.242-.244-.364-.427-.364h-1.036a.416.416 0 0 0-.426.425v.06c.243 1.518 1.219 2.61 3.23 2.914v1.457c0 .242.183.425.487.485h.915c.243 0 .426-.182.487-.485V21.34c1.829-.303 3.047-1.578 3.047-3.217z"
+      />
+      <path
+        fill="#FFFFFF"
+        d="M12.892 24.497c-4.754-1.7-7.192-6.98-5.424-11.653.914-2.55 2.925-4.491 5.424-5.402.244-.121.365-.303.365-.607v-.85c0-.242-.121-.424-.365-.485-.061 0-.183 0-.244.06a10.895 10.895 0 0 0-7.13 13.717c1.096 3.4 3.717 6.01 7.13 7.102.244.121.488 0 .548-.243.061-.06.061-.122.061-.243v-.85c0-.182-.182-.424-.365-.546zm6.46-18.936c-.244-.122-.488 0-.548.242-.061.061-.061.122-.061.243v.85c0 .243.182.485.365.607 4.754 1.7 7.192 6.98 5.424 11.653-.914 2.55-2.925 4.491-5.424 5.402-.244.121-.365.303-.365.607v.85c0 .242.121.424.365.485.061 0 .183 0 .244-.06a10.895 10.895 0 0 0 7.13-13.717c-1.096-3.46-3.778-6.07-7.13-7.162z"
+      />
+    </svg>
+  );
+}
+
 function WalletCard({
   title,
   badge,
   badgeTone = 'amber',
   activeHighlight = false,
+  asset = 'sol',
   providerLabel,
   subtitleNote = 'on-chain',
   address,
@@ -47,6 +64,7 @@ function WalletCard({
   badge: string;
   badgeTone?: 'amber' | 'emerald' | 'sky';
   activeHighlight?: boolean;
+  asset?: 'sol' | 'usdc';
   providerLabel: string;
   subtitleNote?: string;
   address: string | null;
@@ -58,24 +76,29 @@ function WalletCard({
   onReceive?: () => void;
   onCopy: (addr: string) => void;
 }) {
-  const onChainUsd = sol * solUsd + usdc;
+  const isUsdc = asset === 'usdc';
+  const onChainUsd = isUsdc ? usdc : sol * solUsd + usdc;
   return (
     <div className={cx(
       'relative overflow-hidden rounded-[1.35rem] border bg-gradient-to-br from-[#141622] via-[#10111a] to-[#0c0d14] p-6 shadow-xl transition-colors',
-      activeHighlight ? 'border-emerald-400/45 shadow-[0_0_24px_rgba(16,185,129,0.12)]' : 'border-white/[0.08]',
+      activeHighlight ? 'border-[#6c75f5]/60 shadow-[0_0_24px_rgba(108,117,245,0.18)]' : 'border-white/[0.08]',
     )}>
-      {/* Subtle large Solana watermark */}
-      <svg viewBox="0 0 397.7 311.7" aria-hidden className="pointer-events-none absolute right-28 top-1/2 w-40 -translate-y-1/2 opacity-[0.045]">
-        <path fill="#14F195" d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7z" />
-        <path fill="#00C2FF" d="M64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8z" />
-        <path fill="#9945FF" d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" />
-      </svg>
+      {/* Subtle large watermark */}
+      {isUsdc ? (
+        <UsdcMark className="pointer-events-none absolute right-28 top-1/2 size-36 -translate-y-1/2 opacity-[0.05]" />
+      ) : (
+        <svg viewBox="0 0 397.7 311.7" aria-hidden className="pointer-events-none absolute right-28 top-1/2 w-40 -translate-y-1/2 opacity-[0.045]">
+          <path fill="#14F195" d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7z" />
+          <path fill="#00C2FF" d="M64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8z" />
+          <path fill="#9945FF" d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" />
+        </svg>
+      )}
 
-      {/* Top row: Wallet identity + Solana network pill */}
+      {/* Top row: Wallet identity + network pill */}
       <div className="relative flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-3.5">
           <span className="grid size-12 shrink-0 place-items-center rounded-full border border-white/[0.08] bg-black/55">
-            <SolanaMark className="size-5.5" />
+            {isUsdc ? <UsdcMark className="size-6" /> : <SolanaMark className="size-5.5" />}
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -111,8 +134,8 @@ function WalletCard({
         <div className="flex items-center gap-2">
           {secondaryAction}
           <span className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-black/45 px-3.5 py-1.5 text-xs font-medium text-fg">
-            <SolanaMark className="size-3.5" />
-            Solana
+            {isUsdc ? <UsdcMark className="size-3.5" /> : <SolanaMark className="size-3.5" />}
+            {isUsdc ? 'USDC · Solana' : 'Solana'}
           </span>
         </div>
       </div>
@@ -121,8 +144,19 @@ function WalletCard({
       <div className="relative mt-7 flex flex-wrap items-end justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-baseline gap-2 tabular-nums">
-            <span className="text-[2.15rem] font-bold leading-none tracking-tight text-white">{fmtSol(sol, 4)}</span>
-            <span className="text-base font-medium text-fg2">SOL · {usdc.toFixed(2)} USDC</span>
+            {isUsdc ? (
+              <>
+                <span className="text-[2.15rem] font-bold leading-none tracking-tight text-white">
+                  {usdc.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                <span className="text-base font-medium text-fg2">USDC</span>
+              </>
+            ) : (
+              <>
+                <span className="text-[2.15rem] font-bold leading-none tracking-tight text-white">{fmtSol(sol, 4)}</span>
+                <span className="text-base font-medium text-fg2">SOL · {usdc.toFixed(2)} USDC</span>
+              </>
+            )}
           </div>
           <div className="mt-1.5 text-xs text-muted tabular-nums">
             ≈ {fmtUsd(onChainUsd)} {subtitleNote}
@@ -174,12 +208,13 @@ export function WalletsView() {
     setPaperStartSol(val);
     setPaperInput(String(val));
     setPaperModal(false);
-    toast(`Shadow paper balance set to ${fmtSol(val, 2)} SOL`, 'ok');
+    toast(`Paper balance set to ${fmtSol(val, 2)} SOL`, 'ok');
   };
 
   const b = state.balances;
   const isShadow = state.engine.status === 'SHADOW';
   const hotWallet = state.config?.config.wallets.hot_wallet_pubkey || null;
+  const sweepEnabled = state.config?.config.treasury.sweep_enabled ?? false;
   const paperBuySol = state.config?.config.strategy.default_buy_sol ?? 1;
   const paperOpen = state.positions.filter((p) => p.id.startsWith('paper_'));
   const paperOpenVal = paperOpen.reduce((a, p) => a + p.tokens * p.price, 0);
@@ -193,7 +228,7 @@ export function WalletsView() {
   const shadowCard = (
     <WalletCard
       key="shadow"
-      title="Shadow Paper Wallet"
+      title="Paper Wallet"
       badge={isShadow ? '● Active' : 'Standby'}
       badgeTone={isShadow ? 'emerald' : 'sky'}
       activeHighlight={isShadow}
@@ -280,7 +315,7 @@ export function WalletsView() {
     <WalletCard
       key="bot"
       title="Bot Trading Wallet"
-      badge={!isShadow && state.engineSource === 'bridge' ? '● Active' : isShadow ? 'Standby (Shadow ON)' : 'Configured'}
+      badge={!isShadow && state.engineSource === 'bridge' ? '● Active' : isShadow ? 'Standby (Paper ON)' : 'Configured'}
       badgeTone={!isShadow && state.engineSource === 'bridge' ? 'emerald' : 'amber'}
       activeHighlight={!isShadow && state.engineSource === 'bridge'}
       providerLabel="Engine Host"
@@ -302,14 +337,41 @@ export function WalletsView() {
     />
   );
 
+  const usdcCard = (
+    <WalletCard
+      key="usdc"
+      title="USDC Wallet"
+      badge={sweepEnabled ? 'Auto-Sweep' : 'Treasury'}
+      badgeTone="sky"
+      asset="usdc"
+      providerLabel="SPL USDC · Bot Wallet"
+      subtitleNote="swept profits · on-chain"
+      address={hotWallet}
+      sol={0}
+      usdc={b.usdc}
+      solUsd={b.solUsd}
+      onCopy={copyAddr}
+      onReceive={hotWallet ? () => setReceiveAddr({ label: 'USDC Wallet (SPL)', addr: hotWallet }) : undefined}
+      primaryAction={
+        <Link
+          href="/treasury"
+          className="inline-flex h-10 items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-5 text-sm font-semibold text-fg transition-colors hover:bg-white/[0.12]"
+        >
+          <Settings className="size-4" aria-hidden />
+          Treasury
+        </Link>
+      }
+    />
+  );
+
   return (
     <>
       <PageHeader
         title="Wallets"
         sub={
           isShadow
-            ? 'Shadow mode is ON — Shadow Paper Wallet is active for all simulated trades.'
-            : 'Connected Phantom browser wallet and engine hot trading wallet on Solana mainnet.'
+            ? 'Paper Mode is ON — Paper Wallet is active for all simulated trades.'
+            : 'Connected Phantom browser wallet, engine hot trading wallet, and USDC treasury on Solana mainnet.'
         }
       />
 
@@ -319,11 +381,13 @@ export function WalletsView() {
             {shadowCard}
             {phantomCard}
             {botCard}
+            {usdcCard}
           </>
         ) : (
           <>
             {phantomCard}
             {botCard}
+            {usdcCard}
             {shadowCard}
           </>
         )}
@@ -340,13 +404,13 @@ export function WalletsView() {
       </Modal>
 
       {/* Editable Paper balance modal */}
-      <Modal open={paperModal} onClose={() => setPaperModal(false)} title="Edit Shadow Paper Balance">
+      <Modal open={paperModal} onClose={() => setPaperModal(false)} title="Edit Paper Balance">
         <form
           className="space-y-4 text-sm"
           onSubmit={(e) => { e.preventDefault(); savePaperBalance(Number(paperInput)); }}
         >
           <p className="text-fg2">
-            Set your simulated <b className="text-fg">Shadow Mode</b> bankroll in SOL. Trades use real live Pump.fun prices without spending any real funds.
+            Set your simulated <b className="text-fg">Paper Mode</b> bankroll in SOL. Trades use real live Pump.fun prices without spending any real funds.
           </p>
 
           <div>

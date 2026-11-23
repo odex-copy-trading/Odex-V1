@@ -13,6 +13,30 @@ const PUBLIC_SOLANA_HTTP = 'https://api.mainnet-beta.solana.com';
 const PUMPPORTAL_WS = 'wss://pumpportal.fun/api/data';
 const ZERO_REVERTS = { duplicate: 0, mutex: 0, kolNotLanded: 0, slippage: 0, expired: 0 };
 
+const IGNORED_MINTS = new Set([
+  'So11111111111111111111111111111111111111112', // WSOL
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+]);
+
+const DEX_PROGRAM_VENUES: Array<[string, FeedEvent['venue']]> = [
+  ['6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P', 'Pump.fun'],
+  ['pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', 'PumpSwap'],
+  ['LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj', 'Raydium LaunchLab'],
+  ['675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', 'Raydium CPMM'],
+  ['CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C', 'Raydium CPMM'],
+  ['LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', 'Raydium CPMM'],
+  ['JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', 'Raydium CPMM'],
+];
+
+function detectVenueFromLogs(logs: string[]): FeedEvent['venue'] | null {
+  const joined = logs.join('\n');
+  for (const [programId, venue] of DEX_PROGRAM_VENUES) {
+    if (joined.includes(programId)) return venue;
+  }
+  return null;
+}
+
 function buildRpcEndpoints(rawUrl: string, apiKey: string | null): { httpUrl: string; wsUrl: string } {
   let base = rawUrl.trim();
   if (!base || base.includes('example-provider.com') || base.includes('example.net')) {
@@ -48,8 +72,14 @@ export class SolanaLiveFeed {
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
   private lastPumpMsgAt = 0;
   private lastSlotMsgAt = 0;
-  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; instantTpFired: boolean; firedSteps: Set<number> }>();
+  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; hasLiveTick: boolean; breakevenArmed: boolean; instantTpFired: boolean; firedSteps: Set<number> }>();
   private watchedKolKeys = new Set<string>();
+  private pumpSubscribedKols = new Set<string>();
+  private rpcKolReqToPubkey = new Map<number, string>();
+  private rpcKolPubkeyToSubId = new Map<string, number>();
+  private rpcKolSubIdToPubkey = new Map<number, string>();
+  private nextRpcSubReqId = 100;
+  private seenKolSigs = new Set<string>();
   private solUsd = 0;
   private solBalance = 0;
   private lastSlot = 0;
@@ -128,17 +158,47 @@ export class SolanaLiveFeed {
     ws.on('open', () => {
       this.slotRetry = 0;
       this.lastSlotMsgAt = Date.now();
+      this.rpcKolReqToPubkey.clear();
+      this.rpcKolPubkeyToSubId.clear();
+      this.rpcKolSubIdToPubkey.clear();
       console.log(`[solana-feed] Slot stream connected (${this.usePublicSlotFallback ? 'public mainnet-beta' : 'configured RPC'})`);
       ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'slotSubscribe', params: [] }));
+      this.syncKolSubscriptions();
     });
 
     ws.on('message', (raw) => {
       this.lastSlotMsgAt = Date.now();
       let msg: Record<string, unknown>;
       try { msg = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
+      if (typeof msg.id === 'number' && typeof msg.result === 'number' && this.rpcKolReqToPubkey.has(msg.id)) {
+        const pubkey = this.rpcKolReqToPubkey.get(msg.id)!;
+        this.rpcKolReqToPubkey.delete(msg.id);
+        this.rpcKolPubkeyToSubId.set(pubkey, msg.result);
+        this.rpcKolSubIdToPubkey.set(msg.result, pubkey);
+        return;
+      }
       if (msg.method === 'slotNotification') {
         const slot = (msg.params as { result?: { slot?: number } })?.result?.slot;
         if (typeof slot === 'number') this.onSlot(slot);
+        return;
+      }
+      if (msg.method === 'logsNotification') {
+        const params = msg.params as {
+          subscription?: number;
+          result?: { context?: { slot?: number }; value?: { signature?: string; err?: unknown; logs?: string[] } };
+        };
+        const subId = params?.subscription;
+        const val = params?.result?.value;
+        const slot = params?.result?.context?.slot ?? this.lastSlot;
+        if (typeof subId !== 'number' || !val?.signature || val.err !== null) return;
+        const kolPubkey = this.rpcKolSubIdToPubkey.get(subId);
+        if (!kolPubkey) return;
+        const logs = Array.isArray(val.logs) ? val.logs : [];
+        const venue = detectVenueFromLogs(logs);
+        if (!venue) return;
+        if (this.seenKolSigs.has(val.signature)) return;
+        this.markKolSigSeen(val.signature);
+        void this.inspectKolRpcTransaction(kolPubkey, val.signature, slot, venue);
       }
     });
 
@@ -189,6 +249,7 @@ export class SolanaLiveFeed {
     ws.on('open', () => {
       this.pumpRetry = 0;
       this.lastPumpMsgAt = Date.now();
+      this.pumpSubscribedKols.clear();
       console.log('[solana-feed] Connected to live mainnet Pump.fun new-token stream');
       ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
       this.syncKolSubscriptions();
@@ -261,12 +322,15 @@ export class SolanaLiveFeed {
       this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, msg.signature ?? null);
       const cfg = this.cp.configState().config;
       const withinCurve = !msg.vSolInBondingCurve || msg.vSolInBondingCurve <= cfg.strategy.max_curve_reserve_sol;
-      // Selective launch snipe filter (Fhbh1D style: skip <0.5 SOL spam micro-launches, keep high-conviction launches)
+      // Selective quality launch filter: 0.5–5.0 SOL dev buy sweet spot + non-empty metadata (name, symbol, uri)
+      const hasMeta = Boolean(msg.name?.trim() && msg.symbol?.trim() && msg.uri?.trim());
       if (
         this.cp.engineStatus === 'SHADOW' &&
         cfg.strategy.modes.pumpfun_create_snipe &&
         withinCurve &&
+        hasMeta &&
         sizeSol >= 0.5 &&
+        sizeSol <= 5.0 &&
         this.paper.size < 5 &&
         !this.paper.has(msg.mint)
       ) {
@@ -316,31 +380,196 @@ export class SolanaLiveFeed {
   }
 
   // ---------- 3. Shadow Mode Real-Price Paper Trader (1:1 parity with Live Mode) ----------
-  private syncKolSubscriptions() {
-    const kols = this.cp.snapshot().kols.filter((k) => k.enabled);
-    const next = new Set(kols.map((k) => k.pubkey));
-    const added = [...next].filter((k) => !this.watchedKolKeys.has(k));
-    const removed = [...this.watchedKolKeys].filter((k) => !next.has(k));
-    this.watchedKolKeys = next;
-    if (this.pumpWs?.readyState === WebSocket.OPEN) {
-      if (added.length) this.pumpWs.send(JSON.stringify({ method: 'subscribeAccountTrade', keys: added }));
-      if (removed.length) this.pumpWs.send(JSON.stringify({ method: 'unsubscribeAccountTrade', keys: removed }));
+  private markKolSigSeen(sig: string) {
+    this.seenKolSigs.add(sig);
+    if (this.seenKolSigs.size > 500) {
+      const first = this.seenKolSigs.values().next().value;
+      if (first) this.seenKolSigs.delete(first);
     }
   }
 
+  private syncKolSubscriptions() {
+    const kols = this.cp.snapshot().kols.filter((k) => k.enabled);
+    const next = new Set(kols.map((k) => k.pubkey));
+    this.watchedKolKeys = next;
+
+    // 1. PumpPortal account-trade subscriptions (re-subscribes cleanly after every reconnect)
+    if (this.pumpWs?.readyState === WebSocket.OPEN) {
+      const addedPump = [...next].filter((k) => !this.pumpSubscribedKols.has(k));
+      const removedPump = [...this.pumpSubscribedKols].filter((k) => !next.has(k));
+      if (addedPump.length) {
+        this.pumpWs.send(JSON.stringify({ method: 'subscribeAccountTrade', keys: addedPump }));
+        for (const k of addedPump) this.pumpSubscribedKols.add(k);
+      }
+      if (removedPump.length) {
+        this.pumpWs.send(JSON.stringify({ method: 'unsubscribeAccountTrade', keys: removedPump }));
+        for (const k of removedPump) this.pumpSubscribedKols.delete(k);
+      }
+    }
+
+    // 2. Solana RPC WebSocket logsSubscribe (processed commitment, ~250-500ms across ALL DEXs)
+    if (this.slotWs?.readyState === WebSocket.OPEN) {
+      const pendingPubkeys = new Set(this.rpcKolReqToPubkey.values());
+      for (const pubkey of next) {
+        if (this.rpcKolPubkeyToSubId.has(pubkey) || pendingPubkeys.has(pubkey)) continue;
+        const reqId = this.nextRpcSubReqId++;
+        this.rpcKolReqToPubkey.set(reqId, pubkey);
+        this.slotWs.send(JSON.stringify({
+          jsonrpc: '2.0',
+          id: reqId,
+          method: 'logsSubscribe',
+          params: [{ mentions: [pubkey] }, { commitment: 'processed' }],
+        }));
+      }
+      for (const [pubkey, subId] of [...this.rpcKolPubkeyToSubId.entries()]) {
+        if (next.has(pubkey)) continue;
+        this.rpcKolPubkeyToSubId.delete(pubkey);
+        this.rpcKolSubIdToPubkey.delete(subId);
+        this.slotWs.send(JSON.stringify({
+          jsonrpc: '2.0',
+          id: this.nextRpcSubReqId++,
+          method: 'logsUnsubscribe',
+          params: [subId],
+        }));
+      }
+    }
+  }
+
+  /** Parses a confirmed non-reverted KOL transaction detected via Solana RPC logsSubscribe. */
+  private async inspectKolRpcTransaction(
+    kolPubkey: string,
+    signature: string,
+    slot: number,
+    venue: FeedEvent['venue'],
+  ) {
+    const rpcUrl = this.usePublicSlotFallback ? PUBLIC_SOLANA_HTTP : this.endpoints.httpUrl;
+    const fetchTx = async () => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 3500);
+      try {
+        const r = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'getTransaction',
+            params: [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
+          }),
+        });
+        if (!r.ok) return null;
+        const j = await r.json() as {
+          result?: {
+            meta?: {
+              err: unknown;
+              preBalances?: number[];
+              postBalances?: number[];
+              preTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
+              postTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
+            };
+            transaction?: { message?: { accountKeys?: Array<string | { pubkey: string }> } };
+          } | null;
+        };
+        return j.result ?? null;
+      } finally {
+        clearTimeout(t);
+      }
+    };
+
+    try {
+      let tx = await fetchTx();
+      if (!tx) {
+        await new Promise((res) => setTimeout(res, 500));
+        tx = await fetchTx();
+      }
+      if (!tx?.meta || tx.meta.err !== null) return;
+
+      const keys = (tx.transaction?.message?.accountKeys ?? []).map((k) => (typeof k === 'string' ? k : k.pubkey));
+      const idx = keys.indexOf(kolPubkey);
+      if (idx < 0) return;
+
+      const preLamports = tx.meta.preBalances?.[idx] ?? 0;
+      const postLamports = tx.meta.postBalances?.[idx] ?? 0;
+      let solSpent = (preLamports - postLamports) / 1e9;
+
+      const preTok = new Map<string, number>();
+      for (const tb of tx.meta.preTokenBalances ?? []) {
+        if (tb.owner === kolPubkey && tb.mint) preTok.set(tb.mint, tb.uiTokenAmount?.uiAmount ?? 0);
+      }
+      const postTok = new Map<string, number>();
+      for (const tb of tx.meta.postTokenBalances ?? []) {
+        if (tb.owner === kolPubkey && tb.mint) postTok.set(tb.mint, tb.uiTokenAmount?.uiAmount ?? 0);
+      }
+
+      // Include WSOL spend if the KOL bought using wrapped SOL
+      const wsolMint = 'So11111111111111111111111111111111111111112';
+      const wsolDelta = (preTok.get(wsolMint) ?? 0) - (postTok.get(wsolMint) ?? 0);
+      if (wsolDelta > 0) solSpent += wsolDelta;
+
+      // Find the token the KOL acquired (positive net balance delta, ignoring WSOL/USDC/USDT)
+      let boughtMint: string | null = null;
+      let boughtTokens = 0;
+      for (const [mint, postAmt] of postTok.entries()) {
+        if (IGNORED_MINTS.has(mint)) continue;
+        const delta = postAmt - (preTok.get(mint) ?? 0);
+        if (delta > boughtTokens) {
+          boughtTokens = delta;
+          boughtMint = mint;
+        }
+      }
+      if (!boughtMint || boughtTokens <= 0) return;
+
+      const kol = this.cp.snapshot().kols.find((k) => k.enabled && k.pubkey === kolPubkey);
+      if (!kol || solSpent < kol.triggerMargin) return;
+
+      const entryPriceSol = solSpent / boughtTokens;
+      this.onKolBuySignal(
+        {
+          signature,
+          mint: boughtMint,
+          traderPublicKey: kolPubkey,
+          solAmount: +solSpent.toFixed(4),
+          venueOverride: venue,
+          slotOverride: slot,
+          entryPriceSol,
+        },
+        this.pumpWs ?? undefined,
+      );
+    } catch { /* ignore transient RPC fetch error */ }
+  }
+
   private onKolBuySignal(
-    msg: { signature?: string; mint?: string; traderPublicKey?: string; symbol?: string; solAmount?: number; vSolInBondingCurve?: number; vTokensInBondingCurve?: number; pool?: string },
-    ws: WebSocket,
+    msg: {
+      signature?: string;
+      mint?: string;
+      traderPublicKey?: string;
+      bondingCurveKey?: string;
+      symbol?: string;
+      solAmount?: number;
+      vSolInBondingCurve?: number;
+      vTokensInBondingCurve?: number;
+      pool?: string;
+      venueOverride?: FeedEvent['venue'];
+      slotOverride?: number;
+      entryPriceSol?: number;
+    },
+    ws?: WebSocket,
   ) {
     const cfg = this.cp.configState().config;
     if (!cfg.strategy.modes.kol_backrun || !msg.mint || !msg.traderPublicKey) return;
+    if (msg.signature) {
+      if (this.seenKolSigs.has(msg.signature) && !msg.venueOverride) return;
+      this.markKolSigSeen(msg.signature);
+    }
     const kol = this.cp.snapshot().kols.find((k) => k.enabled && k.pubkey === msg.traderPublicKey);
     if (!kol) return;
     if (msg.vSolInBondingCurve && msg.vSolInBondingCurve > kol.maxCurveReserveSol) return;
 
     const ts = Date.now();
-    const slot = this.lastSlot;
+    const slot = msg.slotOverride ?? this.lastSlot;
     const symbol = (msg.symbol || msg.mint.slice(0, 4)).trim().slice(0, 16);
+    const venue: FeedEvent['venue'] = msg.venueOverride ?? (msg.pool === 'raydium' ? 'Raydium LaunchLab' : 'Pump.fun');
     const ev: FeedEvent = {
       id: `kol_${(msg.signature || msg.mint).slice(0, 16)}`,
       ts,
@@ -349,19 +578,19 @@ export class SolanaLiveFeed {
       kolId: kol.id,
       mint: msg.mint,
       symbol,
-      venue: msg.pool === 'raydium' ? 'Raydium LaunchLab' : 'Pump.fun',
+      venue,
       sizeSol: kol.buySizeSol,
       fanout: 0,
       winner: null,
       cuUsed: 0,
       reverts: ZERO_REVERTS,
       outcome: 'shadow',
-      note: `Copied ${kol.label} · live mainnet`,
+      note: `Copied ${kol.label} · ${msg.solAmount ? `${msg.solAmount} SOL · ` : ''}${msg.venueOverride ? 'RPC live' : 'live mainnet'}`,
     };
     this.cp.ingestExternalEvent({ type: 'kol_shred_detected', ts, slot, kolId: kol.id, mint: ev.mint, symbol, venue: ev.venue });
     this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, msg.signature ?? null);
     if (this.cp.engineStatus === 'SHADOW' && this.paper.size < 5 && !this.paper.has(msg.mint)) {
-      this.openPaperPosition(ev, kol.buySizeSol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws);
+      this.openPaperPosition(ev, kol.buySizeSol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, msg.entryPriceSol);
     }
   }
 
@@ -369,25 +598,39 @@ export class SolanaLiveFeed {
     return [...this.paper.values()].map((e) => e.pos);
   }
 
-  private openPaperPosition(ev: FeedEvent, desiredBuySol: number, vSol?: number, vTokens?: number, ws?: WebSocket, bondingCurveKey?: string) {
+  private openPaperPosition(ev: FeedEvent, desiredBuySol: number, vSol?: number, vTokens?: number, ws?: WebSocket, bondingCurveKey?: string, overrideEntryPrice?: number) {
     const cfg = this.cp.configState().config;
     const buySol = Math.max(0.01, Math.min(100, desiredBuySol || cfg.strategy.default_buy_sol || 1));
     const buyFeeSol = this.cp.estimateExecutionFeeSol();
     const entrySol = +(buySol + buyFeeSol).toFixed(6);
 
-    // Exact Pump.fun constant-product AMM (x * y = k) + competing sniper front-run impact (+1 slot realism).
-    const baseVSol = vSol && vSol > 0 ? vSol : 30;
-    const baseVTokens = vTokens && vTokens > 0 ? vTokens : 1_073_000_000;
-    const competitionSol = ev.sizeSol >= 1.0 ? 1.5 : 0.6; // competing bots landing ahead in same/+1 slot
-    const preVSol = baseVSol + competitionSol;
-    const preVTokens = (baseVSol * baseVTokens) / preVSol;
+    let tokens: number;
+    let effectiveEntryPrice: number;
+    let postVSol: number;
+    let markPrice: number;
 
-    const netSolIn = buySol * 0.99; // Pump.fun 1% protocol fee
-    const tokens = (preVTokens * netSolIn) / (preVSol + netSolIn);
-    const effectiveEntryPrice = buySol / tokens;
-    const postVSol = preVSol + netSolIn;
-    const postVTokens = preVTokens - tokens;
-    const markPrice = postVSol / postVTokens;
+    if ((!vSol || !vTokens) && overrideEntryPrice && overrideEntryPrice > 0) {
+      // Non-Pump.fun DEX KOL buy parsed via RPC: 1% fee + 1.5% realistic backrun slippage
+      const netSolIn = buySol * 0.99;
+      effectiveEntryPrice = overrideEntryPrice * 1.015;
+      tokens = netSolIn / effectiveEntryPrice;
+      markPrice = overrideEntryPrice;
+      postVSol = 50;
+    } else {
+      // Exact Pump.fun constant-product AMM (x * y = k) + competing sniper front-run impact (+1 slot realism).
+      const baseVSol = vSol && vSol > 0 ? vSol : 30;
+      const baseVTokens = vTokens && vTokens > 0 ? vTokens : 1_073_000_000;
+      const competitionSol = ev.sizeSol >= 1.0 ? 1.5 : 0.6; // competing bots landing ahead in same/+1 slot
+      const preVSol = baseVSol + competitionSol;
+      const preVTokens = (baseVSol * baseVTokens) / preVSol;
+
+      const netSolIn = buySol * 0.99; // Pump.fun 1% protocol fee
+      tokens = (preVTokens * netSolIn) / (preVSol + netSolIn);
+      effectiveEntryPrice = buySol / tokens;
+      postVSol = preVSol + netSolIn;
+      const postVTokens = preVTokens - tokens;
+      markPrice = postVSol / postVTokens;
+    }
 
     const pos: Position = {
       id: `paper_${ev.mint.slice(0, 12)}`,
@@ -407,7 +650,7 @@ export class SolanaLiveFeed {
       proceedsSol: 0,
       pendingSell: null,
     };
-    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, instantTpFired: false, firedSteps: new Set() });
+    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, hasLiveTick: false, breakevenArmed: false, instantTpFired: false, firedSteps: new Set() });
     console.log(`[solana-feed] Shadow AMM buy: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee, vSol=${postVSol.toFixed(1)}, curve=${bondingCurveKey ?? 'n/a'})`);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [ev.mint] }));
@@ -542,12 +785,14 @@ export class SolanaLiveFeed {
     if (prev > 0 && (price / prev > 8 || price / prev < 0.05)) return false;
     if (entry.pos.entryPrice > 0 && price / entry.pos.entryPrice > 25 && (!vSol || vSol < 50)) return false;
     const changed = prev <= 0 || Math.abs(price - prev) / prev > 1e-6;
+    entry.hasLiveTick = true;
     if (!changed) return false;
     entry.pos = { ...entry.pos, price };
     if (vSol && vSol > 0) entry.vSol = vSol;
     if (price > entry.peakPrice) entry.peakPrice = price;
 
     const mult = entry.pos.entryPrice > 0 ? price / entry.pos.entryPrice : 1;
+    if (mult >= 1.25) entry.breakevenArmed = true;
     const exits = this.cp.configState().config.exits;
     const slPct = exits.stop_loss_pct ?? 30;
 
@@ -563,8 +808,14 @@ export class SolanaLiveFeed {
       return false;
     }
 
-    // 3. Trailing stop-loss check from peak price
-    if (exits.trailing_stop_pct && exits.trailing_stop_pct > 0 && entry.peakPrice > entry.pos.entryPrice) {
+    // 2b. Breakeven shield: once up >= +25%, protect entry + 3% fee buffer so winners never turn red
+    if (entry.breakevenArmed && mult <= 1.03) {
+      this.closePaperPosition(mint, 'Shadow breakeven shield');
+      return false;
+    }
+
+    // 3. Trailing stop-loss (only arms once peak >= +30% to avoid early launch wick stop-outs)
+    if (exits.trailing_stop_pct && exits.trailing_stop_pct > 0 && entry.peakPrice >= entry.pos.entryPrice * 1.30) {
       const dropFromPeak = (entry.peakPrice - price) / entry.peakPrice;
       if (dropFromPeak >= exits.trailing_stop_pct / 100) {
         this.closePaperPosition(mint, `Shadow trailing stop (-${exits.trailing_stop_pct}%)`);
@@ -666,8 +917,20 @@ export class SolanaLiveFeed {
           this.cp.updatePaperState(this.listPaperPositions());
         }
       }
-      if (this.paper.has(mint) && heldSecs >= 300) {
+      if (!this.paper.has(mint)) continue;
+      const mult = entry.pos.entryPrice > 0 ? entry.pos.price / entry.pos.entryPrice : 1;
+      // Dead-launch stagnation cut: if still flat/red (< +2%) after 60s of live ticks, cut early & free slot
+      if (entry.hasLiveTick && heldSecs >= 60 && mult < 1.02) {
+        this.closePaperPosition(mint, 'Shadow stagnation cut (60s)');
+        continue;
+      }
+      // 5m time cap ONLY for non-runners (< +20%); let runners (>= +20%) ride trailing stop up to 30m hard max
+      if (heldSecs >= 300 && mult < 1.20) {
         this.closePaperPosition(mint, 'Shadow time cap (5m)');
+        continue;
+      }
+      if (heldSecs >= 1800) {
+        this.closePaperPosition(mint, 'Shadow max hold (30m)');
       }
     }
   }

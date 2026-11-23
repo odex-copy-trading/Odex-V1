@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Bell, ChevronDown, Copy, Download, Eye, OctagonX, Pause, Play, Plus, Power, Search, Users, Wallet } from '@/components/icons';
-import { Badge, Button, Dot, Modal, Skeleton, cx } from '@/components/ui';
+import { Button, Dot, Modal, Skeleton, cx } from '@/components/ui';
 import { usePhantom } from '@/lib/phantom';
 import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
 import { isPubkey } from '@/lib/pubkey';
@@ -14,7 +14,7 @@ import type { EngineStatus } from '@/lib/types';
 const ENGINE: Record<EngineStatus, { label: string; dot: 'ok' | 'warn' | 'info' | 'bad'; icon: typeof Play; tone: string }> = {
   RUNNING: { label: 'Running', dot: 'ok', icon: Play, tone: 'text-emerald-300' },
   PAUSED: { label: 'Paused', dot: 'warn', icon: Pause, tone: 'text-amber-300' },
-  SHADOW: { label: 'Shadow mode', dot: 'info', icon: Eye, tone: 'text-sky-300' },
+  SHADOW: { label: 'Paper Mode', dot: 'info', icon: Eye, tone: 'text-sky-300' },
   KILLED: { label: 'Killed', dot: 'bad', icon: OctagonX, tone: 'text-rose-300' },
 };
 
@@ -56,7 +56,7 @@ export function EngineRailButton() {
 
   const set = async (status: Exclude<EngineStatus, 'KILLED'>) => {
     setOpen(false);
-    await run({ type: 'engine.set', status }, `Engine ${status === 'SHADOW' ? 'in shadow mode' : status.toLowerCase()}`);
+    await run({ type: 'engine.set', status }, `Engine ${status === 'SHADOW' ? 'in Paper Mode' : status.toLowerCase()}`);
   };
 
   return (
@@ -79,7 +79,7 @@ export function EngineRailButton() {
           {([
             ['RUNNING', Play, 'Run', 'Detect and send bursts'],
             ['PAUSED', Pause, 'Pause', 'Detect only, send nothing'],
-            ['SHADOW', Eye, 'Shadow mode', 'Simulate decisions, send nothing'],
+            ['SHADOW', Eye, 'Paper Mode', 'Simulate decisions, send nothing'],
           ] as const).map(([v, ItemIcon, l, d]) => (
             <button key={v} role="menuitemradio" aria-checked={st === v} type="button" onClick={() => set(v)}
               className={cx('flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-raised', st === v && 'bg-raised')}>
@@ -243,10 +243,10 @@ function WalletPill() {
                 </span>
                 <div className="min-w-0">
                   <div className="text-[0.95rem] font-semibold leading-tight text-fg">
-                    {isShadow ? 'Shadow Paper Wallet' : 'Bot Wallet'}
+                    {isShadow ? 'Paper Wallet' : 'Bot Wallet'}
                   </div>
                   <div className="mt-1 flex items-center gap-1.5 text-xs text-muted">
-                    <span className="num truncate" title={isShadow ? 'Simulated Shadow Paper Wallet' : hotWallet || undefined}>
+                    <span className="num truncate" title={isShadow ? 'Simulated Paper Wallet' : hotWallet || undefined}>
                       {isShadow ? 'Paper Simulator' : hotWallet ? shortKey(hotWallet, 4) : 'Not set'}
                     </span>
                     {!isShadow && hotWallet && (
@@ -406,16 +406,16 @@ function GlobalSearch() {
   const done = () => { setOpen(false); setQ(''); };
   const item = 'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-raised';
   return (
-    <div ref={ref} className="relative mx-auto w-full max-w-[29rem] min-w-0">
-      <label className="flex h-10 items-center gap-2.5 rounded-[0.8rem] border border-line bg-card px-3.5 text-muted focus-within:border-line2">
-        <Search className="size-4 shrink-0" aria-hidden />
+    <div ref={ref} className="relative mx-auto w-full max-w-[26rem] min-w-0">
+      <label className="flex h-9 items-center gap-2 rounded-[0.72rem] border border-line bg-card px-3 text-muted focus-within:border-line2">
+        <Search className="size-3.5 shrink-0" aria-hidden />
         <input ref={input} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)}
           placeholder="Search KOLs, tokens, wallets" aria-label="Search KOLs, tokens, wallets" autoComplete="off" spellCheck={false}
-          className="min-w-0 flex-1 bg-transparent text-[0.95rem] text-fg outline-none placeholder:text-muted" />
-        <kbd className="hidden rounded-md border border-line2 px-1.5 text-xs text-muted sm:block">/</kbd>
+          className="min-w-0 flex-1 bg-transparent text-[0.85rem] text-fg outline-none placeholder:text-muted" />
+        <kbd className="hidden rounded-md border border-line2 px-1.5 text-[0.7rem] text-muted sm:block">/</kbd>
       </label>
       {open && s && (
-        <div className={cx(panel, 'left-0 right-0 top-12 max-h-[60vh] overflow-auto p-1.5')}>
+        <div className={cx(panel, 'left-0 right-0 top-11 max-h-[60vh] overflow-auto p-1.5')}>
           {newWallet && <Link href={`/watchlist#add=${q.trim()}`} onClick={done} className={item}><Plus className="size-4 text-muted" aria-hidden />Track this wallet <span className="num text-xs text-muted">{shortKey(q.trim())}</span></Link>}
           {kols.length > 0 && <div className="px-3 pb-1 pt-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">KOLs</div>}
           {kols.map((k) => <Link key={k.id} href={`/watchlist#${k.id}`} onClick={done} className={item}><Users className="size-4 text-muted" aria-hidden />{k.label}<span className="num ml-auto text-xs text-muted">{shortKey(k.pubkey)}</span></Link>)}
@@ -428,14 +428,14 @@ function GlobalSearch() {
   );
 }
 
-const SOURCE: Record<string, { label: string; tone: 'warn' | 'ok' | 'bad' | 'info'; title: string }> = {
-  bridge: { label: 'LIVE ENGINE', tone: 'ok', title: 'Connected to the trading engine.' },
-  disconnected: { label: 'ENGINE OFFLINE', tone: 'bad', title: 'Control plane is live; waiting for the Rust engine to connect.' },
+const SOURCE: Record<string, { label: string; tone: string; title: string }> = {
+  bridge: { label: 'LIVE ENGINE', tone: 'text-emerald-400', title: 'Connected to the trading engine.' },
+  disconnected: { label: 'ENGINE OFFLINE', tone: 'text-rose-400', title: 'Control plane is live; waiting for the Rust engine to connect.' },
 };
 function SourceBadge() {
   const { state } = useTerminal();
   const s = SOURCE[state.engineSource ?? 'disconnected'] ?? SOURCE.disconnected;
-  return <Badge tone={s.tone} className="hidden sm:inline-flex"><span title={s.title}>{s.label}</span></Badge>;
+  return <span title={s.title} className={cx('hidden text-[0.72rem] font-semibold tracking-wide sm:inline-flex', s.tone)}>{s.label}</span>;
 }
 
 function AccountMenu() {

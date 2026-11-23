@@ -110,7 +110,7 @@ export function ClosedTab({ rows, unit }: { rows: ClosedPosition[]; unit: 'USD' 
 // ---------------- live signals ----------------
 const OUTCOME: Record<FeedEvent['outcome'], { label: string; tone: 'neutral' | 'warn' | 'ok' | 'info' | 'bad' }> = {
   filled: { label: 'Filled', tone: 'ok' }, missed: { label: 'Missed', tone: 'neutral' }, expired: { label: 'Expired', tone: 'warn' },
-  shadow: { label: 'Shadow', tone: 'info' }, sold: { label: 'Sold', tone: 'neutral' },
+  shadow: { label: 'Paper', tone: 'info' }, sold: { label: 'Sold', tone: 'neutral' },
 };
 
 export function SignalsTab({ rows }: { rows: FeedEvent[] }) {

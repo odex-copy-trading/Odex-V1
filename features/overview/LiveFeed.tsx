@@ -23,7 +23,7 @@ const OUTCOME: Record<FeedEvent['outcome'], { label: string; tone: 'ok' | 'bad' 
   filled: { label: 'FILLED', tone: 'ok' },
   missed: { label: 'MISSED', tone: 'neutral' },
   expired: { label: 'EXPIRED', tone: 'warn' },
-  shadow: { label: 'SHADOW', tone: 'info' },
+  shadow: { label: 'PAPER', tone: 'info' },
   sold: { label: 'SOLD', tone: 'accent' },
 };
 

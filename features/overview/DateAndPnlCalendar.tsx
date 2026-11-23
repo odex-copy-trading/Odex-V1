@@ -108,7 +108,7 @@ function MonthCalendar({
   const cells = useMemo(() => buildMonthGridSun(year, month), [year, month]);
 
   return (
-    <div className="w-[16.5rem]">
+    <div className="w-full min-w-0">
       <div className="mb-3 flex items-center justify-between">
         {leftArrow ? (
           <button type="button" onClick={leftArrow} aria-label="Previous month" className="grid size-7 place-items-center rounded-full border border-white/10 bg-white/[0.04] text-fg2 hover:bg-white/[0.1] hover:text-fg">
@@ -213,11 +213,11 @@ export function DateRangePicker({
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className="inline-flex h-10 items-center gap-2 rounded-[0.75rem] border border-line bg-card px-3.5 text-[0.92rem] font-medium hover:bg-raised"
+        className="inline-flex h-9 items-center gap-1.5 rounded-[0.68rem] border border-line bg-card px-3 text-[0.84rem] font-medium hover:bg-raised"
       >
-        <Calendar className="size-4 text-fg2" aria-hidden />
+        <Calendar className="size-3.5 text-fg2" aria-hidden />
         <span>{value.label}</span>
-        <ChevronDown className="size-3.5 text-muted" aria-hidden />
+        <ChevronDown className="size-3 text-muted" aria-hidden />
       </button>
 
       {open && (
@@ -249,7 +249,7 @@ export function DateRangePicker({
             </div>
 
             {/* Dual-month calendar */}
-            <div className="flex flex-1 flex-wrap justify-center gap-6 p-5">
+            <div className="grid flex-1 grid-cols-1 gap-6 p-5 sm:grid-cols-2">
               <MonthCalendar
                 year={leftMonth.y}
                 month={leftMonth.m}
@@ -381,19 +381,19 @@ export function PnlCalendarButton({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex h-10 items-center gap-2 rounded-[0.75rem] border border-line bg-card px-3.5 text-[0.92rem] font-medium hover:bg-raised"
+        className="inline-flex h-9 items-center gap-1.5 rounded-[0.68rem] border border-line bg-card px-3 text-[0.84rem] font-medium hover:bg-raised"
       >
-        <Calendar className="size-4 text-fg2" aria-hidden />
+        <Calendar className="size-3.5 text-fg2" aria-hidden />
         <span>PnL calendar</span>
       </button>
 
       {open && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-xs" onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}>
-          <div role="dialog" aria-modal="true" aria-label="PnL Calendar" className="max-h-[92vh] w-full max-w-[54rem] overflow-auto rounded-2xl border border-white/10 bg-[#0b0c12] p-6 shadow-2xl">
+          <div role="dialog" aria-modal="true" aria-label="PnL Calendar" className="max-h-[94vh] w-full max-w-[62rem] overflow-auto rounded-2xl border border-white/10 bg-[#0b0c12] p-7 shadow-2xl">
             {/* Header */}
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-3">
-                <h2 className="text-base font-bold text-white">PnL Calendar (Solana)</h2>
+                <h2 className="text-[1.15rem] font-bold text-white">PnL Calendar (Solana)</h2>
                 <div role="group" aria-label="Mode" className="inline-flex rounded-full border border-white/10 bg-white/[0.04] p-0.5 text-xs font-semibold">
                   <button
                     type="button"
@@ -438,17 +438,17 @@ export function PnlCalendarButton({
             </div>
 
             {/* Monthly total + win/loss bar */}
-            <div className="mt-5 text-center text-sm text-fg2">
+            <div className="mt-5 text-center text-base text-fg2">
               Total PnL for the month:{' '}
-              <b className={cx('num text-base font-bold', monthTotal > 0 ? 'text-emerald-400' : monthTotal < 0 ? 'text-rose-400' : 'text-white')}>
+              <b className={cx('num text-[1.15rem] font-bold', monthTotal > 0 ? 'text-emerald-400' : monthTotal < 0 ? 'text-rose-400' : 'text-white')}>
                 {fmtVal(monthTotal, monthTotal !== 0)}
               </b>
             </div>
-            <div className="mt-3 flex items-center justify-between text-xs font-semibold tabular-nums">
+            <div className="mt-3.5 flex items-center justify-between text-[0.82rem] font-semibold tabular-nums">
               <span className="text-emerald-400">{winDays} / {fmtVal(winSum)}</span>
               <span className="text-rose-400">{loseDays} / {fmtVal(loseSum)}</span>
             </div>
-            <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]">
+            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/[0.08]">
               {winDays + loseDays > 0 && (
                 <div className="flex h-full w-full">
                   <div className="bg-emerald-400" style={{ width: `${winRatio}%` }} />
@@ -458,11 +458,11 @@ export function PnlCalendarButton({
             </div>
 
             {/* Calendar grid (MON..SUN) */}
-            <div className="mt-5 grid grid-cols-7 gap-1.5 text-center text-[0.7rem] font-semibold uppercase tracking-wider text-muted">
+            <div className="mt-6 grid grid-cols-7 gap-2 text-center text-[0.78rem] font-semibold uppercase tracking-wider text-muted">
               {['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'].map((d) => <div key={d} className="pb-1">{d}</div>)}
             </div>
-            <div className="grid grid-cols-7 gap-1.5">
-              {Array.from({ length: firstDowMon }).map((_, i) => <div key={`pad-${i}`} className="h-20" />)}
+            <div className="grid grid-cols-7 gap-2">
+              {Array.from({ length: firstDowMon }).map((_, i) => <div key={`pad-${i}`} className="h-[5.75rem]" />)}
               {Array.from({ length: daysInMonth }).map((_, idx) => {
                 const day = idx + 1;
                 const info = daily.get(day);
@@ -473,7 +473,7 @@ export function PnlCalendarButton({
                     key={day}
                     title={info ? `${info.count} closed trade${info.count === 1 ? '' : 's'}` : 'No closed trades'}
                     className={cx(
-                      'flex h-20 flex-col justify-between rounded-lg border p-2 transition-colors',
+                      'flex h-[5.75rem] flex-col justify-between rounded-xl border p-2.5 transition-colors',
                       val > 0
                         ? 'border-emerald-500/30 bg-emerald-500/10'
                         : val < 0
@@ -481,14 +481,14 @@ export function PnlCalendarButton({
                           : 'border-white/[0.05] bg-white/[0.025]',
                     )}
                   >
-                    <span className={cx('text-xs font-semibold tabular-nums', isToday ? 'text-white' : 'text-muted')}>{day}</span>
+                    <span className={cx('text-[0.86rem] font-semibold tabular-nums', isToday ? 'text-white' : 'text-muted')}>{day}</span>
                     <div className={cx(
-                      'num text-center text-xs font-semibold tabular-nums',
+                      'num text-center text-[0.86rem] font-semibold tabular-nums',
                       val > 0 ? 'text-emerald-300' : val < 0 ? 'text-rose-300' : 'text-muted/60',
                     )}>
                       {info ? fmtVal(val, true) : fmtVal(0)}
                     </div>
-                    <span className="text-right text-[0.62rem] text-muted">{info ? `${info.count}t` : ''}</span>
+                    <span className="text-right text-[0.72rem] text-muted">{info ? `${info.count}t` : ''}</span>
                   </div>
                 );
               })}
