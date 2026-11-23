@@ -2,6 +2,7 @@
 import { EventEmitter } from 'node:events';
 import { z } from 'zod';
 import { DEFAULT_CONFIG, diffConfig, validateConfig, type BotConfig, type FieldErrors } from '../lib/config/schema';
+import { DEFAULT_KOLS } from '../lib/config/seed-kols';
 import { isPubkey } from '../lib/pubkey';
 import { SELL_PCTS, type EngineSource, type SellPct, type StateSnapshot, type TelemetryEvent } from '../lib/telemetry';
 import type { ClosedPosition, ConfigState, Kol, NonceHealth, Position } from '../lib/types';
@@ -69,7 +70,10 @@ export class ControlPlane extends EventEmitter {
     }
     this.cfg = { version: latest.version, config: latest.config, updatedAt: latest.createdAt };
     db.clearPendingRestart();
-    if (db.listKols().length === 0 && seed?.kols.length) for (const k of seed.kols) db.upsertKol(k);
+    if (db.listKols().length === 0) {
+      const initialKols = seed?.kols.length ? seed.kols : DEFAULT_KOLS;
+      for (const k of initialKols) db.upsertKol(k);
+    }
     engine.onEvent((e) => this.onEngine(e));
   }
 

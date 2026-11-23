@@ -829,6 +829,7 @@ export class SolanaLiveFeed {
       // Exact Pump.fun constant-product AMM (x * y = k) + competing sniper front-run impact (+1 slot realism).
       const baseVSol = vSol && vSol > 0 ? vSol : 30;
       const baseVTokens = vTokens && vTokens > 0 ? vTokens : 1_073_000_000;
+      const basePrice = baseVSol / baseVTokens;
       const competitionSol = ev.sizeSol >= 1.0 ? 1.5 : 0.6; // competing bots landing ahead in same/+1 slot
       const preVSol = baseVSol + competitionSol;
       const preVTokens = (baseVSol * baseVTokens) / preVSol;
@@ -836,6 +837,13 @@ export class SolanaLiveFeed {
       const netSolIn = buySol * 0.99; // Pump.fun 1% protocol fee
       tokens = (preVTokens * netSolIn) / (preVSol + netSolIn);
       effectiveEntryPrice = buySol / tokens;
+      // Filter 3 (Fhbh1D strict slippage cap): abort rather than overpay if front-run + buy impact exceeds slippage_bps (default 10%)
+      const maxSlipBps = Math.max(cfg.strategy.slippage_bps || 800, 1000);
+      const actualSlipBps = ((effectiveEntryPrice - basePrice) / basePrice) * 10_000;
+      if (actualSlipBps > maxSlipBps) {
+        console.log(`[solana-feed] Skipped $${ev.symbol}: entry slippage ${(actualSlipBps / 100).toFixed(1)}% > ${(maxSlipBps / 100).toFixed(1)}% cap`);
+        return;
+      }
       postVSol = preVSol + netSolIn;
       const postVTokens = preVTokens - tokens;
       markPrice = postVSol / postVTokens;
