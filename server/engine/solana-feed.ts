@@ -87,6 +87,7 @@ export class SolanaLiveFeed {
   private lastSlot = 0;
   private lastSlotAt = 0;
   private seenMints = new Set<string>();
+  private recentBoughtSymbols = new Map<string, number>();
   private endpoints: { httpUrl: string; wsUrl: string } = { httpUrl: PUBLIC_SOLANA_HTTP, wsUrl: PUBLIC_SOLANA_WS };
 
   constructor(private cp: ControlPlane, private secrets: SecretStore) {}
@@ -410,6 +411,8 @@ export class SolanaLiveFeed {
           vTokensInBondingCurve: vTokens,
           bondingCurveKey: c.bonding_curve,
           pool: 'pump',
+          fromFallback: true,
+          createdAtMs: typeof c.created_timestamp === 'number' ? c.created_timestamp : undefined,
         });
       }
     } catch { /* ignore transient fallback error */ }
@@ -428,6 +431,8 @@ export class SolanaLiveFeed {
       vTokensInBondingCurve?: number;
       bondingCurveKey?: string;
       pool?: string;
+      fromFallback?: boolean;
+      createdAtMs?: number;
     },
     ws?: WebSocket,
   ) {
@@ -470,9 +475,17 @@ export class SolanaLiveFeed {
     const withinCurve = !msg.vSolInBondingCurve || msg.vSolInBondingCurve <= cfg.strategy.max_curve_reserve_sol;
     // Selective quality launch filter: 0.5–5.0 SOL dev buy sweet spot + non-empty metadata (name, symbol, uri)
     const hasMeta = Boolean(msg.name?.trim() && msg.symbol?.trim() && (msg.uri?.trim() || ev.image));
+    // Never auto-buy stale REST fallback launches (>2s old) — display them in Live Signals only.
+    const isFreshForAutoBuy = !msg.fromFallback || (typeof msg.createdAtMs === 'number' && ts - msg.createdAtMs <= 2_000);
+    // 15-minute duplicate-symbol cooldown so copycat/vamp clones (e.g., 3x $TOAD) are never bought back-to-back.
+    const normSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const lastSymBuy = normSym ? (this.recentBoughtSymbols.get(normSym) ?? 0) : 0;
+    const notDuplicateClone = !normSym || ts - lastSymBuy > 900_000;
     if (
       this.cp.engineStatus === 'SHADOW' &&
       cfg.strategy.modes.pumpfun_create_snipe &&
+      isFreshForAutoBuy &&
+      notDuplicateClone &&
       withinCurve &&
       hasMeta &&
       sizeSol >= 0.5 &&
@@ -480,6 +493,13 @@ export class SolanaLiveFeed {
       this.paper.size < 5 &&
       !this.paper.has(msg.mint)
     ) {
+      if (normSym) {
+        this.recentBoughtSymbols.set(normSym, ts);
+        if (this.recentBoughtSymbols.size > 300) {
+          const oldest = this.recentBoughtSymbols.keys().next().value;
+          if (oldest) this.recentBoughtSymbols.delete(oldest);
+        }
+      }
       this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey);
     }
     if (!ev.image && msg.uri) void this.hydrateTokenImage(ev, msg.uri, msg.signature ?? null);
