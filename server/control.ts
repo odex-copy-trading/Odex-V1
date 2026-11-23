@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { DEFAULT_CONFIG, diffConfig, validateConfig, type BotConfig, type FieldErrors } from '../lib/config/schema';
 import { isPubkey } from '../lib/pubkey';
 import { SELL_PCTS, type EngineSource, type SellPct, type StateSnapshot, type TelemetryEvent } from '../lib/telemetry';
-import type { ConfigState, Kol, NonceHealth } from '../lib/types';
+import type { ClosedPosition, ConfigState, Kol, NonceHealth, Position } from '../lib/types';
 import type { Db } from './db';
 import { HttpError } from './http';
 import type { SecretStore } from './secrets';
@@ -73,6 +73,25 @@ export class ControlPlane extends EventEmitter {
   }
 
   get engineSource(): EngineSource { return this.rt ? this.engine.source : 'disconnected'; }
+  get engineStatus(): EngineRuntime['engine']['status'] { return this.rt?.engine.status ?? 'PAUSED'; }
+
+  /** Updates Shadow-mode paper positions & optional closed trade using real mainnet prices. */
+  updatePaperState(positions: Position[], closed?: ClosedPosition, openedNew = false) {
+    if (!this.rt) return;
+    const realPositions = this.rt.positions.filter((p) => !p.id.startsWith('paper_'));
+    this.rt.positions = [...positions, ...realPositions];
+    if (openedNew) {
+      this.rt.session = { ...this.rt.session, fills: this.rt.session.fills + 1, bursts: this.rt.session.bursts + 1 };
+    }
+    if (closed) {
+      this.rt.closed = [closed, ...this.rt.closed.filter((c) => c.id !== closed.id)].slice(0, 300);
+      this.db.insertClosed(closed);
+      const net = closed.proceedsSol - closed.entrySol;
+      this.rt.session = { ...this.rt.session, realizedSol: +(this.rt.session.realizedSol + net).toFixed(6) };
+    }
+    this.publish({ type: 'position_updated', ts: Date.now(), positions: this.rt.positions, closed });
+    if (openedNew || closed) this.publish({ type: 'session_updated', ts: Date.now(), session: this.rt.session });
+  }
 
   /** Push persisted config and KOL rules to a (re)connected engine. */
   async syncEngine() {
@@ -314,7 +333,47 @@ export class ControlPlane extends EventEmitter {
 
   async sell(mint: string, pct: SellPct, a: Actor) {
     const r = this.needRt();
-    if (!r.positions.some((p) => p.mint === mint)) throw new HttpError(404, 'No open position for that mint');
+    const pos = r.positions.find((p) => p.mint === mint);
+    if (!pos) throw new HttpError(404, 'No open position for that mint');
+    if (pos.id.startsWith('paper_')) {
+      const sellTokens = pos.tokens * (pct / 100);
+      const proceeds = sellTokens * pos.price;
+      const totalProceeds = (pos.proceedsSol ?? 0) + proceeds;
+      let closed: ClosedPosition | undefined;
+      if (pct >= 100 || pos.tokens - sellTokens <= 1e-6) {
+        r.positions = r.positions.filter((p) => p.id !== pos.id);
+        closed = {
+          id: `cl_${pos.id}_${Date.now().toString(36)}`,
+          mint: pos.mint,
+          symbol: pos.symbol,
+          image: pos.image,
+          venue: pos.venue,
+          kolId: pos.kolId,
+          openedAt: pos.openedAt,
+          closedAt: Date.now(),
+          entrySol: pos.entrySol,
+          proceedsSol: +totalProceeds.toFixed(6),
+          solUsd: r.balances.solUsd || this.liveBalances.solUsd || 0,
+          exitReason: 'Manual shadow sell (100%)',
+        };
+        r.closed = [closed, ...r.closed].slice(0, 300);
+        this.db.insertClosed(closed);
+        const net = closed.proceedsSol - closed.entrySol;
+        r.session = { ...r.session, realizedSol: +(r.session.realizedSol + net).toFixed(6) };
+      } else {
+        const updated: Position = {
+          ...pos,
+          tokens: pos.tokens - sellTokens,
+          proceedsSol: +totalProceeds.toFixed(6),
+          realizedSol: +(pos.realizedSol + proceeds).toFixed(6),
+        };
+        r.positions = r.positions.map((p) => (p.id === pos.id ? updated : p));
+      }
+      this.publish({ type: 'position_updated', ts: Date.now(), positions: r.positions, closed });
+      if (closed) this.publish({ type: 'session_updated', ts: Date.now(), session: r.session });
+      this.db.audit({ ...a, action: 'position.sell', target: mint, detail: { pct, paper: true } });
+      return { accepted: true, mint, pct };
+    }
     try { await this.engine.command({ type: 'sell', mint, pct }); }
     catch (e) { throw new HttpError((e as EngineError).status ?? 502, (e as Error).message); }
     this.db.audit({ ...a, action: 'position.sell', target: mint, detail: { pct } });
