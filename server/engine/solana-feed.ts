@@ -104,7 +104,6 @@ export class SolanaLiveFeed {
     });
 
     ws.on('message', (raw) => {
-      if (this.cp.engineSource === 'bridge') return;
       let msg: Record<string, unknown>;
       try { msg = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
       if (msg.method === 'slotNotification') {
