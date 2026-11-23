@@ -43,6 +43,7 @@ export class SolanaLiveFeed {
   private pumpTimer: ReturnType<typeof setTimeout> | null = null;
   private priceTimer: ReturnType<typeof setInterval> | null = null;
   private paperTimer: ReturnType<typeof setInterval> | null = null;
+  private paperPriceTimer: ReturnType<typeof setInterval> | null = null;
   private paper = new Map<string, { pos: Position; peakPrice: number; firedSteps: Set<number> }>();
   private watchedKolKeys = new Set<string>();
   private solUsd = 0;
@@ -62,6 +63,8 @@ export class SolanaLiveFeed {
     this.priceTimer.unref();
     this.paperTimer = setInterval(() => this.sweepExpiredPaperPositions(), 10_000);
     this.paperTimer.unref();
+    this.paperPriceTimer = setInterval(() => void this.pollPaperPricesFromDexScreener(), 3_000);
+    this.paperPriceTimer.unref();
     this.cp.on('telemetry', (e: { type: string; positions?: Position[] }) => {
       if (e.type === 'config_updated') this.reload();
       if (e.type === 'kols_updated') this.syncKolSubscriptions();
@@ -78,6 +81,7 @@ export class SolanaLiveFeed {
     if (this.pumpTimer) clearTimeout(this.pumpTimer);
     if (this.priceTimer) clearInterval(this.priceTimer);
     if (this.paperTimer) clearInterval(this.paperTimer);
+    if (this.paperPriceTimer) clearInterval(this.paperPriceTimer);
     this.slotWs?.close();
     this.pumpWs?.close();
     this.slotWs = null;
@@ -380,9 +384,39 @@ export class SolanaLiveFeed {
   }
 
   private onPaperTrade(mint: string, vSol?: number, vTokens?: number) {
+    if (!vSol || !vTokens || vSol <= 0 || vTokens <= 0) return;
+    this.applyPaperPrice(mint, vSol / vTokens, vSol);
+  }
+
+  private async pollPaperPricesFromDexScreener() {
+    if (this.paper.size === 0) return;
+    const mints = [...this.paper.keys()].join(',');
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 3000);
+      const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mints}`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!r.ok) return;
+      const data = (await r.json()) as {
+        pairs?: { baseToken?: { address?: string }; priceNative?: string; liquidity?: { quote?: number } }[];
+      };
+      if (!Array.isArray(data.pairs)) return;
+      const bestByMint = new Map<string, { price: number; quoteLiq?: number }>();
+      for (const pair of data.pairs) {
+        const mint = pair.baseToken?.address;
+        const price = Number(pair.priceNative);
+        if (!mint || !Number.isFinite(price) || price <= 0) continue;
+        if (!bestByMint.has(mint)) bestByMint.set(mint, { price, quoteLiq: pair.liquidity?.quote });
+      }
+      for (const [mint, info] of bestByMint) {
+        this.applyPaperPrice(mint, info.price, info.quoteLiq);
+      }
+    } catch { /* ignore transient DexScreener timeouts */ }
+  }
+
+  private applyPaperPrice(mint: string, price: number, vSol?: number) {
     const entry = this.paper.get(mint);
-    if (!entry || !vSol || !vTokens || vSol <= 0 || vTokens <= 0) return;
-    const price = vSol / vTokens;
+    if (!entry || !Number.isFinite(price) || price <= 0) return;
     entry.pos = { ...entry.pos, price };
     if (price > entry.peakPrice) entry.peakPrice = price;
 
@@ -391,7 +425,7 @@ export class SolanaLiveFeed {
     const slPct = exits.stop_loss_pct ?? 30;
 
     // 1. Curve liquidity floor protection (same as live Lighthouse guard)
-    if (exits.curve_floor.enabled && vSol < exits.curve_floor.min_real_sol_reserves_sol) {
+    if (exits.curve_floor.enabled && vSol != null && vSol > 0 && vSol < exits.curve_floor.min_real_sol_reserves_sol) {
       this.closePaperPosition(mint, 'Shadow curve floor');
       return;
     }
