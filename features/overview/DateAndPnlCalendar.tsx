@@ -458,10 +458,10 @@ export function PnlCalendarButton({
             </div>
 
             {/* Calendar grid (MON..SUN) */}
-            <div className="mt-6 grid grid-cols-7 gap-2 text-center text-[0.78rem] font-semibold uppercase tracking-wider text-muted">
-              {['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'].map((d) => <div key={d} className="pb-1">{d}</div>)}
+            <div className="mt-6 grid grid-cols-7 gap-1 text-center text-[0.76rem] font-medium uppercase tracking-wider text-muted">
+              {['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'].map((d) => <div key={d} className="pb-1.5">{d}</div>)}
             </div>
-            <div className="grid grid-cols-7 gap-2">
+            <div className="grid grid-cols-7 gap-1">
               {Array.from({ length: firstDowMon }).map((_, i) => <div key={`pad-${i}`} className="h-[5.75rem]" />)}
               {Array.from({ length: daysInMonth }).map((_, idx) => {
                 const day = idx + 1;
@@ -473,22 +473,44 @@ export function PnlCalendarButton({
                     key={day}
                     title={info ? `${info.count} closed trade${info.count === 1 ? '' : 's'}` : 'No closed trades'}
                     className={cx(
-                      'flex h-[5.75rem] flex-col justify-between rounded-xl border p-2.5 transition-colors',
+                      'relative flex h-[5.75rem] flex-col rounded-[3px] px-2.5 py-2 font-sans transition-colors',
                       val > 0
-                        ? 'border-emerald-500/30 bg-emerald-500/10'
+                        ? 'bg-[#15392a]'
                         : val < 0
-                          ? 'border-rose-500/30 bg-rose-500/10'
-                          : 'border-white/[0.05] bg-white/[0.025]',
+                          ? 'bg-[#3b1c23]'
+                          : 'bg-[#11131a]',
                     )}
                   >
-                    <span className={cx('text-[0.86rem] font-semibold tabular-nums', isToday ? 'text-white' : 'text-muted')}>{day}</span>
+                    <div className="flex items-center justify-between text-[0.78rem] leading-none tabular-nums">
+                      <span className={cx(
+                        isToday
+                          ? 'font-semibold text-white'
+                          : val > 0
+                            ? 'text-[#39d98a]/85'
+                            : val < 0
+                              ? 'text-[#e56b7a]/85'
+                              : 'text-zinc-500',
+                      )}>
+                        {day}
+                      </span>
+                      {info ? (
+                        <span className={cx(
+                          val > 0 ? 'text-[#39d98a]/85' : val < 0 ? 'text-[#e56b7a]/85' : 'text-zinc-500',
+                        )}>
+                          {info.count}
+                        </span>
+                      ) : null}
+                    </div>
                     <div className={cx(
-                      'num text-center text-[0.86rem] font-semibold tabular-nums',
-                      val > 0 ? 'text-emerald-300' : val < 0 ? 'text-rose-300' : 'text-muted/60',
+                      'my-auto text-center text-[0.95rem] font-medium tracking-tight tabular-nums',
+                      val > 0
+                        ? 'text-[#38f29c]'
+                        : val < 0
+                          ? 'text-[#ff5c72]'
+                          : 'text-zinc-600/80',
                     )}>
                       {info ? fmtVal(val, true) : fmtVal(0)}
                     </div>
-                    <span className="text-right text-[0.72rem] text-muted">{info ? `${info.count}t` : ''}</span>
                   </div>
                 );
               })}
