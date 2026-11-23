@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
-use crate::ingest::{pubkey_to_bs58, PubkeyBytes, TriggerEvent, TriggerKind};
+use crate::ingest::{pubkey_to_bs58, PubkeyBytes, TriggerEvent, TriggerKind, Venue};
 pub use builder::{
     derive_ephemeral_seed, derive_seeded_pubkey, AccountMetaSpec, BuildVariantParams,
     BuiltTransaction, InstructionSpec, ProgramIds, TxBuilder, TxVersion, V1TransactionConfig,
@@ -204,7 +204,9 @@ impl ExecutorService {
         // Register filled position in ExitEngine so automated TP/SL & manual sells have full PDA accounts.
         if summary.winner.is_some() && !shadow {
             if let Some(exits) = &self.exit_engine {
-                exits.register_position(
+                let high_conviction = matches!(trigger.kind, TriggerKind::KolBuy { .. });
+                let token_program = builder::SPL_TOKEN_PROGRAM_ID;
+                let tp_order = exits.register_position(
                     crate::exits::ManagedPosition {
                         mint: trigger.mint,
                         pool_or_curve: trigger.pool_pda,
@@ -219,8 +221,41 @@ impl ExecutorService {
                         same_slot_tp_fired: false,
                         fired_steps: vec![],
                     },
-                    false,
+                    high_conviction,
                 );
+                // Fhbh1D same-slot 25% opening TP1 via Program #4 percentage sell router
+                if let Some(order) = tp_order {
+                    let target_dex = match trigger.venue {
+                        Venue::PumpFun => self.builder.programs.pumpfun_program,
+                        Venue::PumpSwap => self.builder.programs.pumpswap_program,
+                        Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => self.builder.programs.launchlab_program,
+                    };
+                    let cpi_accounts = builder::build_venue_cpi_accounts(
+                        trigger.venue,
+                        &trigger.dex_accounts,
+                        cfg.hot_wallet,
+                        ephemeral_ata,
+                        None,
+                        token_program,
+                    );
+                    let sell_params = crate::exits::SellTxParams {
+                        sell_router_program: self.builder.programs.sell_router_program,
+                        target_dex_program: target_dex,
+                        venue: trigger.venue,
+                        hot_wallet: cfg.hot_wallet,
+                        bot_token_account: ephemeral_ata,
+                        pool_or_curve: trigger.pool_pda,
+                        is_token_2022: false,
+                        pre_balance: 0,
+                        sell_pct: order.sell_pct,
+                        min_quote_out: 1,
+                        min_liquidity_floor_lamports: 5_000_000_000,
+                        current_slot: trigger.trigger_slot,
+                        close_on_full_exit: order.close_account,
+                        cpi_accounts,
+                    };
+                    let _ = self.execute_sell(sell_params).await;
+                }
             }
         }
 

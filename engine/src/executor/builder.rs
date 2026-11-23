@@ -233,7 +233,7 @@ pub fn build_venue_cpi_accounts(
 }
 
 pub struct TxBuilder {
-    programs: ProgramIds,
+    pub programs: ProgramIds,
 }
 
 impl TxBuilder {
@@ -284,8 +284,8 @@ impl TxBuilder {
             });
         }
 
-        // ix 2: ComputeBudget (only for v0 fallback; v1 uses native transactionConfig)
-        if p.version == TxVersion::V0 {
+        // ix 2: ComputeBudget (always included so priority fee & CU limit are never dropped on wire)
+        {
             let mut cu_limit = Vec::with_capacity(5);
             cu_limit.push(2u8); // SetComputeUnitLimit
             cu_limit.extend_from_slice(&p.v1_config.compute_unit_limit.to_le_bytes());

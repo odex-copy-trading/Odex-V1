@@ -40,6 +40,7 @@ pub const LAUNCHLAB_PROGRAM_ID: PubkeyBytes = [
 pub const DISC_PUMPFUN_BUY: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
 pub const DISC_PUMPFUN_BUY_EXACT_QUOTE_V3: [u8; 8] = [0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70];
 pub const DISC_PUMPFUN_CREATE_V2: [u8; 8] = [0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77];
+pub const DISC_PUMPFUN_CREATE_V2_TOKEN2022: [u8; 8] = [0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4];
 pub const DISC_PUMPSWAP_BUY: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
 pub const DISC_LAUNCHLAB_BUY_EXACT_IN: [u8; 8] = [0xfa, 0xea, 0x0d, 0x7b, 0xd5, 0x9c, 0x13, 0xec];
 pub const DISC_LAUNCHLAB_INITIALIZE: [u8; 8] = [0xaf, 0xaf, 0x6d, 0x1f, 0x0d, 0x98, 0x9b, 0xed];
@@ -151,7 +152,9 @@ fn parse_buy_ix(ix: &DecodedInstruction) -> Option<ParsedBuy> {
 
 fn parse_launch_ix(ix: &DecodedInstruction) -> Option<ParsedLaunch> {
     let disc: [u8; 8] = ix.data.get(0..8)?.try_into().ok()?;
-    if ix.program_id == PUMPFUN_PROGRAM_ID && disc == DISC_PUMPFUN_CREATE_V2 {
+    if ix.program_id == PUMPFUN_PROGRAM_ID
+        && (disc == DISC_PUMPFUN_CREATE_V2 || disc == DISC_PUMPFUN_CREATE_V2_TOKEN2022)
+    {
         // Pump.fun CreateV2: [mint(0), mint_auth(1), bonding_curve(2), ..., user/creator(7)]
         let mint = *ix.accounts.get(0)?;
         let pool_pda = *ix.accounts.get(2)?;

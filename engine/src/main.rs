@@ -12,6 +12,7 @@ use std::env;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -632,7 +633,7 @@ async fn main() {
         NoncePool::new(vec![]),
         ExecutorRuntimeConfig {
             hot_wallet: hot_wallet_pubkey,
-            tx_version: TxVersion::V1,
+            tx_version: TxVersion::V0,
             v1_config: V1TransactionConfig {
                 compute_unit_limit: 200_000,
                 loaded_accounts_data_size_limit: 256 * 1024,
@@ -648,6 +649,148 @@ async fn main() {
     ));
     let _nonce_sync_handle = executor.nonce_pool().spawn_rpc_sync(rpc_url.clone(), 4);
     let _exec_handle = executor.clone().spawn(ingest.bus.subscribe());
+
+    // 2s KOL Pre-Slot Balance RPC Refresher (keeps BalanceCache live even on ShredStream-only setups like LocalShred)
+    {
+        let kol_rpc = rpc_url.clone();
+        let kol_watchlist = ingest.watchlist.clone();
+        let kol_balances = ingest.balances.clone();
+        tokio::spawn(async move {
+            let http = reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap_or_default();
+            let mut ticker = tokio::time::interval(Duration::from_secs(2));
+            loop {
+                ticker.tick().await;
+                let accounts = kol_watchlist.watched_accounts();
+                if accounts.is_empty() {
+                    continue;
+                }
+                let keys: Vec<String> = accounts.iter().map(|a| bs58::encode(a).into_string()).collect();
+                let req_body = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getMultipleAccounts",
+                    "params": [keys, { "encoding": "base64", "commitment": "processed" }]
+                });
+                if let Ok(resp) = http.post(&kol_rpc).json(&req_body).send().await {
+                    if let Ok(body) = resp.json::<Value>().await {
+                        if let Some(vals) = body.pointer("/result/value").and_then(|v| v.as_array()) {
+                            for (i, acc) in vals.iter().enumerate() {
+                                if let (Some(pk), Some(lamports)) = (accounts.get(i), acc.get("lamports").and_then(|v| v.as_u64())) {
+                                    kol_balances.set(*pk, lamports);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // 1s Live Exit Engine Monitor Loop (drives Fail-Fast SL, TWAP drip, Exit Ladder & 45s Time-Stop on live positions)
+    {
+        let exit_rpc = rpc_url.clone();
+        let exit_mgr = exit_engine.clone();
+        let exit_exec = executor.clone();
+        let exit_hot = hot_wallet_pubkey;
+        let sell_router_prog = env_pubkey("WHAL_SELL_ROUTER_PROGRAM_ID");
+        tokio::spawn(async move {
+            let http = reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap_or_default();
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                ticker.tick().await;
+                let open = exit_mgr.list_positions();
+                if open.is_empty() {
+                    continue;
+                }
+                let now_secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let curve_keys: Vec<String> = open
+                    .iter()
+                    .map(|p| bs58::encode(&p.pool_or_curve).into_string())
+                    .collect();
+                let req_body = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getMultipleAccounts",
+                    "params": [curve_keys, { "encoding": "base64", "commitment": "processed" }]
+                });
+                let vals = match http.post(&exit_rpc).json(&req_body).send().await {
+                    Ok(resp) => resp
+                        .json::<Value>()
+                        .await
+                        .ok()
+                        .and_then(|b| b.pointer("/result/value").and_then(|v| v.as_array()).cloned())
+                        .unwrap_or_default(),
+                    Err(_) => continue,
+                };
+                for (i, pos) in open.iter().enumerate() {
+                    let b64 = vals
+                        .get(i)
+                        .and_then(|v| v.pointer("/data/0"))
+                        .and_then(|v| v.as_str());
+                    let (price_sol, v_sol_lamports) = match b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()) {
+                        Some(buf) if buf.len() >= 24 => {
+                            let v_tokens = u64::from_le_bytes(buf[8..16].try_into().unwrap_or([0; 8])) as f64 / 1e6;
+                            let v_sol = u64::from_le_bytes(buf[16..24].try_into().unwrap_or([0; 8]));
+                            let px = if v_tokens > 0.0 { (v_sol as f64 / 1e9) / v_tokens } else { 0.0 };
+                            (px, v_sol)
+                        }
+                        _ => (pos.entry_price_sol, 30_000_000_000),
+                    };
+                    if let Some(order) = exit_mgr.on_price_update(&pos.mint, price_sol, v_sol_lamports, now_secs) {
+                        info!(
+                            mint = %bs58::encode(&pos.mint).into_string(),
+                            sell_pct = order.sell_pct,
+                            reason = order.reason,
+                            "ExitEngine triggered automated live sell"
+                        );
+                        let target_dex = match pos.venue {
+                            Venue::PumpFun => whal_engine::ingest::detector::PUMPFUN_PROGRAM_ID,
+                            Venue::PumpSwap => whal_engine::ingest::detector::PUMPSWAP_PROGRAM_ID,
+                            Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => whal_engine::ingest::detector::LAUNCHLAB_PROGRAM_ID,
+                        };
+                        let tok_prog = if pos.is_token_2022 { TOKEN_2022_PROGRAM_ID } else { SPL_TOKEN_PROGRAM_ID };
+                        let cpi_accounts = build_venue_cpi_accounts(
+                            pos.venue,
+                            &pos.dex_accounts,
+                            exit_hot,
+                            pos.bot_token_account,
+                            None,
+                            tok_prog,
+                        );
+                        let params = SellTxParams {
+                            sell_router_program: sell_router_prog,
+                            target_dex_program: target_dex,
+                            venue: pos.venue,
+                            hot_wallet: exit_hot,
+                            bot_token_account: pos.bot_token_account,
+                            pool_or_curve: pos.pool_or_curve,
+                            is_token_2022: pos.is_token_2022,
+                            pre_balance: pos.token_balance,
+                            sell_pct: order.sell_pct,
+                            min_quote_out: 1,
+                            min_liquidity_floor_lamports: 5_000_000_000,
+                            current_slot: pos.opened_slot,
+                            close_on_full_exit: order.close_account,
+                            cpi_accounts,
+                        };
+                        let _ = exit_exec.execute_sell(params).await;
+                        if order.close_account || order.sell_pct >= 100 {
+                            exit_mgr.remove_position(&pos.mint);
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     // Forward Executor telemetry -> Step 3 Control Plane bridge
     let exec_out = outbound_tx.clone();
