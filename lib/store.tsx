@@ -116,13 +116,21 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let pingTimer: ReturnType<typeof setInterval> | undefined;
+    let bannerTimer: ReturnType<typeof setTimeout> | undefined;
     let retry = 0;
 
     if (!token) return;
     let ws: WebSocket | null = null;
+    const clearTimers = () => {
+      clearTimeout(timer);
+      clearInterval(pingTimer);
+      clearTimeout(bannerTimer);
+    };
     const open = async () => {
       try {
         dispatch({ type: 'snapshot', snap: await api<StateSnapshot>('GET', '/api/state') });
+        clearTimeout(bannerTimer);
       } catch (e) {
         const err = e as ApiError;
         if (!alive || err.status === 401) return;
@@ -132,24 +140,38 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       }
       if (!alive) return;
       ws = new WebSocket(API_URL.replace(/^http/, 'ws') + '/ws/telemetry');
-      ws.onopen = () => ws?.send(JSON.stringify({ type: 'auth', token }));
+      ws.onopen = () => {
+        ws?.send(JSON.stringify({ type: 'auth', token }));
+        clearInterval(pingTimer);
+        // Client-side JSON keepalive every 25s so Railway's edge proxy never drops idle sockets
+        pingTimer = setInterval(() => {
+          if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+        }, 25_000);
+      };
       ws.onmessage = (m) => {
         const e = JSON.parse(String(m.data)) as TelemetryEvent | WsServerControl;
-        if (e.type === 'ready') { retry = 0; return; }
+        if (e.type === 'ready') { retry = 0; clearTimeout(bannerTimer); return; }
         if (e.type === 'error' || e.type === 'pong') return;
         if (e.type === 'circuit_breaker_tripped') toast(`Circuit breaker: ${e.reason}`, 'error');
         dispatch({ type: 'event', e });
       };
       ws.onclose = (ev) => {
+        clearInterval(pingTimer);
         if (!alive) return;
         if (ev.code === 4401) { saveToken(null); dispatch({ type: 'reset' }); return; }
-        dispatch({ type: 'conn', connection: 'reconnecting' });
-        timer = setTimeout(open, Math.min(10_000, 1000 * 2 ** retry++));
+        // Wait 3.5s before flashing the red banner so seamless proxy/tab reconnects stay silent
+        clearTimeout(bannerTimer);
+        bannerTimer = setTimeout(() => {
+          if (alive) dispatch({ type: 'conn', connection: 'reconnecting' });
+        }, 3_500);
+        const delay = retry === 0 ? 300 : Math.min(10_000, 1000 * 2 ** retry);
+        retry++;
+        timer = setTimeout(open, delay);
       };
     };
     open();
     sock.current = { close: () => ws?.close(), drop: () => ws?.close(4000, 'simulated drop') };
-    return () => { alive = false; clearTimeout(timer); ws?.close(1000); };
+    return () => { alive = false; clearTimers(); ws?.close(1000); };
   }, [token, api, saveToken, toast]);
 
   // ---------- commands ----------

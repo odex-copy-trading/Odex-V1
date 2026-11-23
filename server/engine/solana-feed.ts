@@ -347,15 +347,57 @@ export class SolanaLiveFeed {
       }>;
       if (!Array.isArray(coins)) return;
       const cutoff = Date.now() - 60_000;
-      for (const c of [...coins].reverse()) {
-        if (!c.mint || this.seenMints.has(c.mint)) continue;
-        if (typeof c.created_timestamp === 'number' && c.created_timestamp < cutoff) continue;
-        const vSol = typeof c.virtual_sol_reserves === 'number' && c.virtual_sol_reserves > 0
+      const fresh = [...coins].reverse().filter(
+        (c): c is typeof c & { mint: string } =>
+          Boolean(c.mint) && !this.seenMints.has(c.mint!) && (typeof c.created_timestamp !== 'number' || c.created_timestamp >= cutoff),
+      );
+      if (fresh.length === 0) return;
+
+      // Batch-read real on-chain bonding-curve reserves (vSol, vTokens) in 1 RPC call since Pump.fun v3 omits them.
+      const curveReserves = new Map<string, { vSol: number; vTokens: number }>();
+      const curveCoins = fresh.filter((c) => typeof c.bonding_curve === 'string' && c.bonding_curve.length >= 32);
+      if (curveCoins.length > 0) {
+        try {
+          const rpcCtrl = new AbortController();
+          const rpcTimer = setTimeout(() => rpcCtrl.abort(), 2000);
+          const rpcRes = await fetch(this.usePublicSlotFallback ? PUBLIC_SOLANA_HTTP : this.endpoints.httpUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: rpcCtrl.signal,
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'getMultipleAccounts',
+              params: [curveCoins.map((c) => c.bonding_curve), { encoding: 'base64', commitment: 'processed' }],
+            }),
+          });
+          clearTimeout(rpcTimer);
+          if (rpcRes.ok) {
+            const rpcJson = (await rpcRes.json()) as { result?: { value?: ({ data?: [string, string] } | null)[] } };
+            const vals = rpcJson.result?.value;
+            if (Array.isArray(vals)) {
+              for (let i = 0; i < curveCoins.length; i++) {
+                const b64 = vals[i]?.data?.[0];
+                if (!b64) continue;
+                const buf = Buffer.from(b64, 'base64');
+                if (buf.length < 49 || buf[48] === 1) continue;
+                const vTokens = Number(buf.readBigUInt64LE(8)) / 1e6;
+                const vSol = Number(buf.readBigUInt64LE(16)) / 1e9;
+                if (vTokens > 0 && vSol > 0) curveReserves.set(curveCoins[i].mint, { vSol, vTokens });
+              }
+            }
+          }
+        } catch { /* fallback to metadata-only launch if RPC times out */ }
+      }
+
+      for (const c of fresh) {
+        const onChain = curveReserves.get(c.mint);
+        const vSol = onChain?.vSol ?? (typeof c.virtual_sol_reserves === 'number' && c.virtual_sol_reserves > 0
           ? (c.virtual_sol_reserves > 1e6 ? c.virtual_sol_reserves / 1e9 : c.virtual_sol_reserves)
-          : undefined;
-        const vTokens = typeof c.virtual_token_reserves === 'number' && c.virtual_token_reserves > 0
+          : undefined);
+        const vTokens = onChain?.vTokens ?? (typeof c.virtual_token_reserves === 'number' && c.virtual_token_reserves > 0
           ? (c.virtual_token_reserves > 1e12 ? c.virtual_token_reserves / 1e6 : c.virtual_token_reserves)
-          : undefined;
+          : undefined);
         const estDevBuy = vSol && vSol > 30 ? +(vSol - 30).toFixed(4) : 0;
         this.handleNewLaunch({
           mint: c.mint,
