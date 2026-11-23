@@ -62,7 +62,7 @@ export function OverviewView() {
   const won = closedP.filter((c) => c.proceedsSol > c.entrySol).length;
   const winRate = closedP.length ? (won / closedP.length) * 100 : null;
   const enabled = state.kols.filter((k) => k.enabled).length;
-  const kolFills = state.feed.filter((e) => e.ts >= dateRange.start && e.ts <= dateRange.end && e.kind === 'kol_buy' && e.outcome === 'filled').length;
+  const kolFills = closedP.filter((c) => !!c.kolId).length + open.filter((p) => !!p.kolId).length;
   const shadow = state.engine.status === 'SHADOW';
   const killed = state.engine.status === 'KILLED';
   const now = new Date();

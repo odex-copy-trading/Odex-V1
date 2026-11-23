@@ -44,7 +44,7 @@ export function PositionsTab({ rows, unit }: { rows: Position[]; unit: 'USD' | '
       <thead><tr><RTh>Token</RTh><RTh right className="hidden lg:table-cell">Entry</RTh><RTh right className="hidden md:table-cell">Value</RTh><RTh right>P&amp;L</RTh><RTh className="hidden sm:table-cell">Status</RTh><RTh right className="hidden xl:table-cell">Opened</RTh><RTh right>Panic sell</RTh></tr></thead>
       <tbody>
         {rows.map((p) => {
-          const rem = p.initialTokens > 0 ? p.tokens / p.initialTokens : 0, value = p.tokens * p.price, cost = p.entrySol * rem, pnl = value - cost, pct = cost > 0 ? (pnl / cost) * 100 : 0;
+          const rem = p.initialTokens > 0 ? p.tokens / p.initialTokens : 0, value = p.tokens * p.price, banked = p.proceedsSol ?? 0, pnl = value + banked - p.entrySol, pct = p.entrySol > 0 ? (pnl / p.entrySol) * 100 : 0;
           return (
             <tr key={p.id} className="hover:bg-card">
               <RTd><TokenCell symbol={p.symbol} badge={VENUE_SHORT[p.venue]} mint={p.mint} ts={p.openedAt} image={p.image} sub={at(state, p.kolId)} /></RTd>

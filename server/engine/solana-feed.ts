@@ -1020,7 +1020,7 @@ export class SolanaLiveFeed {
 
     // 1. Curve liquidity floor protection (same as live Lighthouse guard)
     if (exits.curve_floor.enabled && vSol != null && vSol > 0 && vSol < exits.curve_floor.min_real_sol_reserves_sol) {
-      this.closePaperPosition(mint, 'Shadow curve floor');
+      this.closePaperPosition(mint, 'Curve floor');
       return false;
     }
 
@@ -1034,13 +1034,13 @@ export class SolanaLiveFeed {
     // 2. Hard stop-loss check
     if (slPct > 0 && mult <= 1 - slPct / 100) {
       if (entry.creator) this.ruggedCreators.add(entry.creator);
-      this.closePaperPosition(mint, `Shadow stop-loss (-${slPct}%)`);
+      this.closePaperPosition(mint, `Stop-loss (-${slPct}%)`);
       return false;
     }
 
     // 2b. Breakeven shield: once up >= +25%, protect entry + 3% fee buffer so winners never turn red
     if (entry.breakevenArmed && mult <= 1.03) {
-      this.closePaperPosition(mint, 'Shadow breakeven shield');
+      this.closePaperPosition(mint, 'Breakeven shield');
       return false;
     }
 
@@ -1048,7 +1048,7 @@ export class SolanaLiveFeed {
     if (exits.trailing_stop_pct && exits.trailing_stop_pct > 0 && entry.peakPrice >= entry.pos.entryPrice * 1.30) {
       const dropFromPeak = (entry.peakPrice - price) / entry.peakPrice;
       if (dropFromPeak >= exits.trailing_stop_pct / 100) {
-        this.closePaperPosition(mint, `Shadow trailing stop (-${exits.trailing_stop_pct}%)`);
+        this.closePaperPosition(mint, `Trailing stop (-${exits.trailing_stop_pct}%)`);
         return false;
       }
     }
@@ -1092,7 +1092,7 @@ export class SolanaLiveFeed {
       if (mult >= step.trigger.value) {
         entry.firedSteps.add(i);
         if (step.sell_pct >= 100) {
-          this.closePaperPosition(mint, `Shadow TP ${step.trigger.value}x`);
+          this.closePaperPosition(mint, `TP ${step.trigger.value}x`);
           return false;
         }
         const sellTokens = entry.pos.tokens * (step.sell_pct / 100);
@@ -1148,7 +1148,7 @@ export class SolanaLiveFeed {
         if (heldSecs >= step.trigger.value) {
           entry.firedSteps.add(i);
           if (step.sell_pct >= 100) {
-            this.closePaperPosition(mint, `Shadow time rung (${step.trigger.value}s)`);
+            this.closePaperPosition(mint, `Time rung (${step.trigger.value}s)`);
             break;
           }
           const sellTokens = entry.pos.tokens * (step.sell_pct / 100);
@@ -1171,7 +1171,7 @@ export class SolanaLiveFeed {
       }
       // 5m time cap for non-runners (< +18%); let 30% moonbag runners ride up to 26m hard max
       if (heldSecs >= 300 && mult < 1.18 && !entry.breakevenArmed) {
-        this.closePaperPosition(mint, 'Shadow time cap (5m)');
+        this.closePaperPosition(mint, 'Time cap (5m)');
         continue;
       }
       if (heldSecs >= 1560) {

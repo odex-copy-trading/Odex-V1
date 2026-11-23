@@ -94,7 +94,27 @@ export class ControlPlane extends EventEmitter {
     return +(baseFeeSol + prioritySol + landerTip + dupRevertsSol).toFixed(6);
   }
 
-  /** Updates Shadow-mode paper positions & optional closed trade using real mainnet prices. */
+  /** Updates persisted KOL win/loss/PnL stats when a Paper Mode KOL position closes. */
+  private recordPaperKolOutcome(closed: ClosedPosition) {
+    if (!closed.kolId) return;
+    const kol = this.db.getKol(closed.kolId);
+    if (!kol) return;
+    const net = closed.proceedsSol - closed.entrySol;
+    const updated: Kol = {
+      ...kol,
+      stats: {
+        wins: kol.stats.wins + (net > 0 ? 1 : 0),
+        losses: kol.stats.losses + (net <= 0 ? 1 : 0),
+        realizedSol: +(kol.stats.realizedSol + net).toFixed(6),
+        lastSeenSlot: this.rt?.chain.slot || this.liveChain.slot || kol.stats.lastSeenSlot,
+      },
+    };
+    this.db.updateKolStats(updated);
+    this.cloud?.syncKol(updated);
+    this.publish({ type: 'kols_updated', ts: Date.now(), kols: this.db.listKols() });
+  }
+
+  /** Updates Paper-mode positions & optional closed trade using real mainnet prices. */
   updatePaperState(positions: Position[], closed?: ClosedPosition, openedNew = false) {
     if (!this.rt) return;
     const realPositions = this.rt.positions.filter((p) => !p.id.startsWith('paper_'));
@@ -108,6 +128,7 @@ export class ControlPlane extends EventEmitter {
       this.cloud?.syncClosed(closed);
       const net = closed.proceedsSol - closed.entrySol;
       this.rt.session = { ...this.rt.session, realizedSol: +(this.rt.session.realizedSol + net).toFixed(6) };
+      this.recordPaperKolOutcome(closed);
     }
     this.publish({ type: 'position_updated', ts: Date.now(), positions: this.rt.positions, closed });
     if (openedNew || closed) this.publish({ type: 'session_updated', ts: Date.now(), session: this.rt.session });
@@ -389,12 +410,14 @@ export class ControlPlane extends EventEmitter {
           entrySol: pos.entrySol,
           proceedsSol: +totalProceeds.toFixed(6),
           solUsd: r.balances.solUsd || this.liveBalances.solUsd || 0,
-          exitReason: 'Manual shadow sell (100%)',
+          exitReason: 'Manual paper sell (100%)',
         };
-        r.closed = [closed, ...r.closed].slice(0, 300);
+        r.closed = [closed, ...r.closed].slice(0, 2000);
         this.db.insertClosed(closed);
+        this.cloud?.syncClosed(closed);
         const net = closed.proceedsSol - closed.entrySol;
         r.session = { ...r.session, realizedSol: +(r.session.realizedSol + net).toFixed(6) };
+        this.recordPaperKolOutcome(closed);
       } else {
         const updated: Position = {
           ...pos,
