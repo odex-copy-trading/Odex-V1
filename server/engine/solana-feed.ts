@@ -11,6 +11,7 @@ import type { SecretStore } from '../secrets';
 const PUBLIC_SOLANA_WS = 'wss://api.mainnet-beta.solana.com';
 const PUBLIC_SOLANA_HTTP = 'https://api.mainnet-beta.solana.com';
 const PUMPPORTAL_WS = 'wss://pumpportal.fun/api/data';
+const PUMPFUN_LATEST_API = 'https://frontend-api-v3.pump.fun/coins?offset=0&limit=10&sort=created_timestamp&order=DESC&includeNsfw=false';
 const ZERO_REVERTS = { duplicate: 0, mutex: 0, kolNotLanded: 0, slippage: 0, expired: 0 };
 
 const IGNORED_MINTS = new Set([
@@ -70,6 +71,7 @@ export class SolanaLiveFeed {
   private paperPriceTimer: ReturnType<typeof setInterval> | null = null;
   private curvePriceTimer: ReturnType<typeof setInterval> | null = null;
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private pumpFallbackTimer: ReturnType<typeof setInterval> | null = null;
   private lastPumpMsgAt = 0;
   private lastSlotMsgAt = 0;
   private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; hasLiveTick: boolean; breakevenArmed: boolean; instantTpFired: boolean; firedSteps: Set<number> }>();
@@ -106,6 +108,9 @@ export class SolanaLiveFeed {
     // Zombie WebSocket watchdog: auto-reconnects if PumpPortal or Solana slot WS goes silent
     this.watchdogTimer = setInterval(() => this.checkStaleStreams(), 15_000);
     this.watchdogTimer.unref();
+    // Automatic Pump.fun v3 REST fallback (3s) whenever PumpPortal WS is down (e.g., 502) or silent >12s
+    this.pumpFallbackTimer = setInterval(() => void this.pollPumpFunFallback(), 3_000);
+    this.pumpFallbackTimer.unref();
     this.cp.on('telemetry', (e: { type: string; positions?: Position[] }) => {
       if (e.type === 'config_updated') this.reload();
       if (e.type === 'kols_updated') this.syncKolSubscriptions();
@@ -125,6 +130,7 @@ export class SolanaLiveFeed {
     if (this.curvePriceTimer) clearInterval(this.curvePriceTimer);
     if (this.paperPriceTimer) clearInterval(this.paperPriceTimer);
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    if (this.pumpFallbackTimer) clearInterval(this.pumpFallbackTimer);
     this.slotWs?.close();
     this.pumpWs?.close();
     this.slotWs = null;
@@ -289,54 +295,18 @@ export class SolanaLiveFeed {
       }
 
       if (msg.txType !== 'create') return;
-      if (this.seenMints.has(msg.mint)) return;
-      this.seenMints.add(msg.mint);
-      if (this.seenMints.size > 400) {
-        const first = this.seenMints.values().next().value;
-        if (first) this.seenMints.delete(first);
-      }
-
-      const ts = Date.now();
-      const slot = this.lastSlot;
-      const symbol = (msg.symbol || msg.mint.slice(0, 4)).trim().slice(0, 16);
-      const sizeSol = typeof msg.solAmount === 'number' && Number.isFinite(msg.solAmount) ? +msg.solAmount.toFixed(4) : 0;
-      const ev: FeedEvent = {
-        id: `live_${(msg.signature || msg.mint).slice(0, 16)}`,
-        ts,
-        slot,
-        kind: 'launch',
-        kolId: null,
+      this.handleNewLaunch({
         mint: msg.mint,
-        symbol,
-        venue: msg.pool === 'raydium' ? 'Raydium LaunchLab' : 'Pump.fun',
-        sizeSol,
-        fanout: 0,
-        winner: null,
-        cuUsed: 0,
-        reverts: ZERO_REVERTS,
-        outcome: 'shadow',
-        note: msg.name ? `${msg.name.slice(0, 28)} · live mainnet` : 'Live mainnet launch',
-      };
-
-      this.cp.ingestExternalEvent({ type: 'kol_shred_detected', ts, slot, kolId: null, mint: ev.mint, symbol, venue: ev.venue });
-      this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, msg.signature ?? null);
-      const cfg = this.cp.configState().config;
-      const withinCurve = !msg.vSolInBondingCurve || msg.vSolInBondingCurve <= cfg.strategy.max_curve_reserve_sol;
-      // Selective quality launch filter: 0.5–5.0 SOL dev buy sweet spot + non-empty metadata (name, symbol, uri)
-      const hasMeta = Boolean(msg.name?.trim() && msg.symbol?.trim() && msg.uri?.trim());
-      if (
-        this.cp.engineStatus === 'SHADOW' &&
-        cfg.strategy.modes.pumpfun_create_snipe &&
-        withinCurve &&
-        hasMeta &&
-        sizeSol >= 0.5 &&
-        sizeSol <= 5.0 &&
-        this.paper.size < 5 &&
-        !this.paper.has(msg.mint)
-      ) {
-        this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey);
-      }
-      if (msg.uri) void this.hydrateTokenImage(ev, msg.uri, msg.signature ?? null);
+        signature: msg.signature,
+        symbol: msg.symbol,
+        name: msg.name,
+        uri: msg.uri,
+        solAmount: msg.solAmount,
+        vSolInBondingCurve: msg.vSolInBondingCurve,
+        vTokensInBondingCurve: msg.vTokensInBondingCurve,
+        bondingCurveKey: msg.bondingCurveKey,
+        pool: msg.pool,
+      }, ws);
     });
 
     ws.on('error', (err) => {
@@ -348,6 +318,129 @@ export class SolanaLiveFeed {
       const wait = Math.min(20_000, 1000 * 2 ** this.pumpRetry++);
       this.pumpTimer = setTimeout(() => this.connectPumpStream(), wait);
     });
+  }
+
+  /** Automatic live launch fallback when PumpPortal WebSocket is down (502) or silent >12s. */
+  private async pollPumpFunFallback() {
+    if (this.stopped) return;
+    const pumpHealthy = this.pumpWs?.readyState === WebSocket.OPEN && Date.now() - this.lastPumpMsgAt < 12_000;
+    if (pumpHealthy) return;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 3000);
+      const r = await fetch(PUMPFUN_LATEST_API, {
+        signal: ctrl.signal,
+        headers: { 'user-agent': 'Mozilla/5.0' },
+      });
+      clearTimeout(t);
+      if (!r.ok) return;
+      const coins = await r.json() as Array<{
+        mint?: string;
+        name?: string;
+        symbol?: string;
+        image_uri?: string;
+        metadata_uri?: string;
+        bonding_curve?: string;
+        created_timestamp?: number;
+        virtual_sol_reserves?: number;
+        virtual_token_reserves?: number;
+      }>;
+      if (!Array.isArray(coins)) return;
+      const cutoff = Date.now() - 60_000;
+      for (const c of [...coins].reverse()) {
+        if (!c.mint || this.seenMints.has(c.mint)) continue;
+        if (typeof c.created_timestamp === 'number' && c.created_timestamp < cutoff) continue;
+        const vSol = typeof c.virtual_sol_reserves === 'number' && c.virtual_sol_reserves > 0
+          ? (c.virtual_sol_reserves > 1e6 ? c.virtual_sol_reserves / 1e9 : c.virtual_sol_reserves)
+          : undefined;
+        const vTokens = typeof c.virtual_token_reserves === 'number' && c.virtual_token_reserves > 0
+          ? (c.virtual_token_reserves > 1e12 ? c.virtual_token_reserves / 1e6 : c.virtual_token_reserves)
+          : undefined;
+        const estDevBuy = vSol && vSol > 30 ? +(vSol - 30).toFixed(4) : 0;
+        this.handleNewLaunch({
+          mint: c.mint,
+          symbol: c.symbol,
+          name: c.name,
+          uri: c.metadata_uri,
+          image: c.image_uri,
+          solAmount: estDevBuy,
+          vSolInBondingCurve: vSol,
+          vTokensInBondingCurve: vTokens,
+          bondingCurveKey: c.bonding_curve,
+          pool: 'pump',
+        });
+      }
+    } catch { /* ignore transient fallback error */ }
+  }
+
+  private handleNewLaunch(
+    msg: {
+      mint: string;
+      signature?: string;
+      symbol?: string;
+      name?: string;
+      uri?: string;
+      image?: string;
+      solAmount?: number;
+      vSolInBondingCurve?: number;
+      vTokensInBondingCurve?: number;
+      bondingCurveKey?: string;
+      pool?: string;
+    },
+    ws?: WebSocket,
+  ) {
+    if (this.seenMints.has(msg.mint)) return;
+    this.seenMints.add(msg.mint);
+    if (this.seenMints.size > 400) {
+      const first = this.seenMints.values().next().value;
+      if (first) this.seenMints.delete(first);
+    }
+
+    const ts = Date.now();
+    const slot = this.lastSlot;
+    const symbol = (msg.symbol || msg.mint.slice(0, 4)).trim().slice(0, 16);
+    const sizeSol = typeof msg.solAmount === 'number' && Number.isFinite(msg.solAmount) ? +msg.solAmount.toFixed(4) : 0;
+    const normImg = msg.image?.trim()
+      ? (msg.image.trim().startsWith('ipfs://') ? `https://ipfs.io/ipfs/${msg.image.trim().slice(7)}` : msg.image.trim())
+      : undefined;
+    const ev: FeedEvent = {
+      id: `live_${(msg.signature || msg.mint).slice(0, 16)}`,
+      ts,
+      slot,
+      kind: 'launch',
+      kolId: null,
+      mint: msg.mint,
+      symbol,
+      image: normImg && /^https?:\/\//i.test(normImg) ? normImg : undefined,
+      venue: msg.pool === 'raydium' ? 'Raydium LaunchLab' : 'Pump.fun',
+      sizeSol,
+      fanout: 0,
+      winner: null,
+      cuUsed: 0,
+      reverts: ZERO_REVERTS,
+      outcome: 'shadow',
+      note: msg.name ? `${msg.name.slice(0, 28)} · live mainnet` : 'Live mainnet launch',
+    };
+
+    this.cp.ingestExternalEvent({ type: 'kol_shred_detected', ts, slot, kolId: null, mint: ev.mint, symbol, venue: ev.venue });
+    this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, msg.signature ?? null);
+    const cfg = this.cp.configState().config;
+    const withinCurve = !msg.vSolInBondingCurve || msg.vSolInBondingCurve <= cfg.strategy.max_curve_reserve_sol;
+    // Selective quality launch filter: 0.5–5.0 SOL dev buy sweet spot + non-empty metadata (name, symbol, uri)
+    const hasMeta = Boolean(msg.name?.trim() && msg.symbol?.trim() && (msg.uri?.trim() || ev.image));
+    if (
+      this.cp.engineStatus === 'SHADOW' &&
+      cfg.strategy.modes.pumpfun_create_snipe &&
+      withinCurve &&
+      hasMeta &&
+      sizeSol >= 0.5 &&
+      sizeSol <= 5.0 &&
+      this.paper.size < 5 &&
+      !this.paper.has(msg.mint)
+    ) {
+      this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey);
+    }
+    if (!ev.image && msg.uri) void this.hydrateTokenImage(ev, msg.uri, msg.signature ?? null);
   }
 
   private async hydrateTokenImage(ev: FeedEvent, rawUri: string, sig: string | null) {
