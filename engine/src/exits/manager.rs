@@ -68,6 +68,7 @@ pub struct ExitOrder {
 
 pub struct ExitEngine {
     positions: Arc<DashMap<PubkeyBytes, ManagedPosition>>,
+    twap_state: Arc<DashMap<PubkeyBytes, (u64, u8)>>, // (last_drip_secs, drips_fired)
     policy: ExitPolicy,
 }
 
@@ -75,6 +76,7 @@ impl ExitEngine {
     pub fn new(policy: ExitPolicy) -> Self {
         Self {
             positions: Arc::new(DashMap::new()),
+            twap_state: Arc::new(DashMap::new()),
             policy,
         }
     }
@@ -126,6 +128,32 @@ impl ExitEngine {
 
         // 2. Max hold time cap -> 100% exit + rent reclaim
         let held_secs = now_secs.saturating_sub(pos.opened_at_secs);
+        let mult = if pos.entry_price_sol > 0.0 {
+            current_price_sol / pos.entry_price_sol
+        } else {
+            0.0
+        };
+
+        // 2a. Fhbh1D Fail-Fast Stop-Loss: dump 100% within 2–3s if price drops <= -6%
+        if held_secs >= 2 && held_secs <= 12 && mult > 0.0 && mult <= 0.94 {
+            return Some(ExitOrder {
+                mint: *mint,
+                sell_pct: 100,
+                close_account: true,
+                reason: "Fail-fast SL (2-3s)",
+            });
+        }
+
+        // 2b. Fhbh1D 45s hard time-stop for flat/dead positions (< +5%)
+        if held_secs >= 45 && held_secs < 90 && mult > 0.0 && mult < 1.05 {
+            return Some(ExitOrder {
+                mint: *mint,
+                sell_pct: 100,
+                close_account: true,
+                reason: "Time-stop (45s)",
+            });
+        }
+
         if self.policy.max_hold_secs > 0 && held_secs >= self.policy.max_hold_secs {
             return Some(ExitOrder {
                 mint: *mint,
@@ -136,11 +164,6 @@ impl ExitEngine {
         }
 
         // 3. Staged exit ladder steps (e.g. 15%, 33%, 100%)
-        let mult = if pos.entry_price_sol > 0.0 {
-            current_price_sol / pos.entry_price_sol
-        } else {
-            0.0
-        };
         for (idx, step) in self.policy.ladder.iter().enumerate() {
             if pos.fired_steps.get(idx).copied().unwrap_or(true) {
                 continue;
@@ -160,6 +183,21 @@ impl ExitEngine {
             }
         }
 
+        // 3b. Fhbh1D 15%-every-2s Exponential TWAP Drip while >= +18% (up to 6 drips, leaving ~30% moonbag)
+        if mult >= 1.18 && held_secs >= 2 {
+            let mut twap = self.twap_state.entry(*mint).or_insert((pos.opened_at_secs, 0));
+            let (last_drip, drips) = *twap;
+            if drips < 6 && now_secs.saturating_sub(last_drip) >= 2 {
+                *twap = (now_secs, drips + 1);
+                return Some(ExitOrder {
+                    mint: *mint,
+                    sell_pct: 15,
+                    close_account: false,
+                    reason: "TWAP drip (15%/2s)",
+                });
+            }
+        }
+
         None
     }
 
@@ -173,6 +211,7 @@ impl ExitEngine {
 
     pub fn remove_position(&self, mint: &PubkeyBytes) {
         self.positions.remove(mint);
+        self.twap_state.remove(mint);
     }
 }
 

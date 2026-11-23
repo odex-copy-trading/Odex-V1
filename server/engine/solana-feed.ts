@@ -76,7 +76,7 @@ export class SolanaLiveFeed {
   private inFlightCurvePoll = false;
   private lastPumpMsgAt = 0;
   private lastSlotMsgAt = 0;
-  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; creator?: string; hasLiveTick: boolean; breakevenArmed: boolean; instantTpFired: boolean; firedSteps: Set<number> }>();
+  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; creator?: string; hasLiveTick: boolean; breakevenArmed: boolean; instantTpFired: boolean; lastTwapAt: number; firedSteps: Set<number> }>();
   private watchedKolKeys = new Set<string>();
   private pumpSubscribedKols = new Set<string>();
   private rpcKolReqToPubkey = new Map<number, string>();
@@ -859,7 +859,7 @@ export class SolanaLiveFeed {
       proceedsSol: 0,
       pendingSell: null,
     };
-    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, creator, hasLiveTick: false, breakevenArmed: false, instantTpFired: false, firedSteps: new Set() });
+    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, creator, hasLiveTick: false, breakevenArmed: false, instantTpFired: false, lastTwapAt: 0, firedSteps: new Set() });
     console.log(`[solana-feed] Shadow AMM buy: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee, vSol=${postVSol.toFixed(1)}, curve=${bondingCurveKey ?? 'n/a'})`);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [ev.mint] }));
@@ -1003,6 +1003,8 @@ export class SolanaLiveFeed {
     if (vSol && vSol > 0) entry.vSol = vSol;
     if (price > entry.peakPrice) entry.peakPrice = price;
 
+    const now = Date.now();
+    const heldSecs = (now - entry.pos.openedAt) / 1000;
     const mult = entry.pos.entryPrice > 0 ? price / entry.pos.entryPrice : 1;
     if (mult >= 1.25) entry.breakevenArmed = true;
     const exits = this.cp.configState().config.exits;
@@ -1011,6 +1013,13 @@ export class SolanaLiveFeed {
     // 1. Curve liquidity floor protection (same as live Lighthouse guard)
     if (exits.curve_floor.enabled && vSol != null && vSol > 0 && vSol < exits.curve_floor.min_real_sol_reserves_sol) {
       this.closePaperPosition(mint, 'Shadow curve floor');
+      return false;
+    }
+
+    // 1b. Fhbh1D 2–3s Fail-Fast Stop-Loss: dump 100% at -6% if momentum fails to follow through early
+    if (heldSecs >= 2.5 && heldSecs <= 12 && mult <= 0.94 && entry.peakPrice < entry.pos.entryPrice * 1.10) {
+      if (entry.creator) this.ruggedCreators.add(entry.creator);
+      this.closePaperPosition(mint, 'Fail-fast SL (2-3s)');
       return false;
     }
 
@@ -1036,14 +1045,29 @@ export class SolanaLiveFeed {
       }
     }
 
-    // 3b. Fhbh1D-style Instant 25% Take-Profit clip on early momentum pop (+15%+)
-    if (!entry.instantTpFired && exits.instant_tp_pct > 0 && mult >= 1.15) {
+    // 3b. Fhbh1D Instant Opening Take-Profit (0–4s pop >= +18%)
+    if (!entry.instantTpFired && exits.instant_tp_pct > 0 && mult >= 1.18) {
       entry.instantTpFired = true;
+      entry.lastTwapAt = now;
       if (exits.instant_tp_pct >= 100) {
-        this.closePaperPosition(mint, `Shadow instant TP (${exits.instant_tp_pct}%)`);
+        this.closePaperPosition(mint, `Instant TP1 (${exits.instant_tp_pct}%)`);
         return false;
       }
       const sellTokens = entry.pos.tokens * (exits.instant_tp_pct / 100);
+      const proceeds = this.calcAmmSellProceeds(sellTokens, price, entry.vSol);
+      entry.pos = {
+        ...entry.pos,
+        tokens: entry.pos.tokens - sellTokens,
+        proceedsSol: +((entry.pos.proceedsSol ?? 0) + proceeds).toFixed(6),
+        realizedSol: +(entry.pos.realizedSol + proceeds).toFixed(6),
+      };
+    }
+
+    // 3c. Fhbh1D Exponential TWAP Drip: sell 15% of REMAINING balance every 2s while >= +18%, leaving a ~30% moonbag to trail
+    const remRatio = entry.pos.initialTokens > 0 ? entry.pos.tokens / entry.pos.initialTokens : 0;
+    if (entry.instantTpFired && mult >= 1.18 && remRatio > 0.32 && now - entry.lastTwapAt >= 2_000) {
+      entry.lastTwapAt = now;
+      const sellTokens = entry.pos.tokens * 0.15;
       const proceeds = this.calcAmmSellProceeds(sellTokens, price, entry.vSol);
       entry.pos = {
         ...entry.pos,
@@ -1132,18 +1156,18 @@ export class SolanaLiveFeed {
       }
       if (!this.paper.has(mint)) continue;
       const mult = entry.pos.entryPrice > 0 ? entry.pos.price / entry.pos.entryPrice : 1;
-      // Dead-launch stagnation cut: if still flat/red (< +2%) after 60s of live ticks, cut early & free slot
-      if (entry.hasLiveTick && heldSecs >= 60 && mult < 1.02) {
-        this.closePaperPosition(mint, 'Shadow stagnation cut (60s)');
+      // Fhbh1D 45s hard time-stop for flat/dead positions (< +5% and never popped >= +18%)
+      if (entry.hasLiveTick && heldSecs >= 45 && mult < 1.05 && entry.peakPrice < entry.pos.entryPrice * 1.18) {
+        this.closePaperPosition(mint, 'Time-stop (45s)');
         continue;
       }
-      // 5m time cap ONLY for non-runners (< +20%); let runners (>= +20%) ride trailing stop up to 30m hard max
-      if (heldSecs >= 300 && mult < 1.20) {
+      // 5m time cap for non-runners (< +18%); let 30% moonbag runners ride up to 26m hard max
+      if (heldSecs >= 300 && mult < 1.18 && !entry.breakevenArmed) {
         this.closePaperPosition(mint, 'Shadow time cap (5m)');
         continue;
       }
-      if (heldSecs >= 1800) {
-        this.closePaperPosition(mint, 'Shadow max hold (30m)');
+      if (heldSecs >= 1560) {
+        this.closePaperPosition(mint, 'Moonbag max hold (26m)');
       }
     }
   }
