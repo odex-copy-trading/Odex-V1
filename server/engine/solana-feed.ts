@@ -43,7 +43,8 @@ export class SolanaLiveFeed {
   private pumpTimer: ReturnType<typeof setTimeout> | null = null;
   private priceTimer: ReturnType<typeof setInterval> | null = null;
   private paperTimer: ReturnType<typeof setInterval> | null = null;
-  private paper = new Map<string, { pos: Position; firedSteps: Set<number> }>();
+  private paper = new Map<string, { pos: Position; peakPrice: number; firedSteps: Set<number> }>();
+  private watchedKolKeys = new Set<string>();
   private solUsd = 0;
   private solBalance = 0;
   private lastSlot = 0;
@@ -63,9 +64,10 @@ export class SolanaLiveFeed {
     this.paperTimer.unref();
     this.cp.on('telemetry', (e: { type: string; positions?: Position[] }) => {
       if (e.type === 'config_updated') this.reload();
+      if (e.type === 'kols_updated') this.syncKolSubscriptions();
       if (e.type === 'position_updated' && e.positions) {
-        const liveIds = new Set(e.positions.map((p) => p.mint));
-        for (const mint of this.paper.keys()) if (!liveIds.has(mint)) this.paper.delete(mint);
+        const liveMints = new Set(e.positions.map((p) => p.mint));
+        for (const mint of this.paper.keys()) if (!liveMints.has(mint)) this.paper.delete(mint);
       }
     });
   }
@@ -169,6 +171,7 @@ export class SolanaLiveFeed {
       this.pumpRetry = 0;
       console.log('[solana-feed] Connected to live mainnet Pump.fun new-token stream');
       ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
+      this.syncKolSubscriptions();
       if (this.paper.size > 0) {
         ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [...this.paper.keys()] }));
       }
@@ -178,6 +181,7 @@ export class SolanaLiveFeed {
       let msg: {
         signature?: string;
         mint?: string;
+        traderPublicKey?: string;
         symbol?: string;
         name?: string;
         uri?: string;
@@ -190,9 +194,14 @@ export class SolanaLiveFeed {
       try { msg = JSON.parse(raw.toString()); } catch { return; }
       if (!msg.mint) return;
 
-      // Live mainnet trade update for an open Shadow paper position -> real mark-to-market PnL + auto exits.
+      // 1. Live mainnet trade update for an open Shadow paper position -> real mark-to-market PnL + full exit engine.
       if ((msg.txType === 'buy' || msg.txType === 'sell') && this.paper.has(msg.mint)) {
         this.onPaperTrade(msg.mint, msg.vSolInBondingCurve, msg.vTokensInBondingCurve);
+      }
+
+      // 2. Live KOL Copy-Trade detection in Shadow mode (same-slot copy using KOL's exact buySizeSol & maxCurveReserveSol).
+      if (msg.txType === 'buy' && msg.traderPublicKey && this.watchedKolKeys.has(msg.traderPublicKey)) {
+        this.onKolBuySignal(msg, ws);
         return;
       }
 
@@ -228,8 +237,17 @@ export class SolanaLiveFeed {
 
       this.cp.ingestExternalEvent({ type: 'kol_shred_detected', ts, slot, kolId: null, mint: ev.mint, symbol, venue: ev.venue });
       this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, msg.signature ?? null);
-      if (this.cp.engineStatus === 'SHADOW' && sizeSol >= 0.2 && this.paper.size < 5 && !this.paper.has(msg.mint)) {
-        this.openPaperPosition(ev, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws);
+      const cfg = this.cp.configState().config;
+      const withinCurve = !msg.vSolInBondingCurve || msg.vSolInBondingCurve <= cfg.strategy.max_curve_reserve_sol;
+      if (
+        this.cp.engineStatus === 'SHADOW' &&
+        cfg.strategy.modes.pumpfun_create_snipe &&
+        withinCurve &&
+        sizeSol >= 0.05 &&
+        this.paper.size < 5 &&
+        !this.paper.has(msg.mint)
+      ) {
+        this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws);
       }
       if (msg.uri) void this.hydrateTokenImage(ev, msg.uri, msg.signature ?? null);
     });
@@ -274,15 +292,66 @@ export class SolanaLiveFeed {
     } catch { /* ignore metadata timeout / broken IPFS link */ }
   }
 
-  // ---------- 3. Shadow Mode Real-Price Paper Trader ----------
+  // ---------- 3. Shadow Mode Real-Price Paper Trader (1:1 parity with Live Mode) ----------
+  private syncKolSubscriptions() {
+    const kols = this.cp.snapshot().kols.filter((k) => k.enabled);
+    const next = new Set(kols.map((k) => k.pubkey));
+    const added = [...next].filter((k) => !this.watchedKolKeys.has(k));
+    const removed = [...this.watchedKolKeys].filter((k) => !next.has(k));
+    this.watchedKolKeys = next;
+    if (this.pumpWs?.readyState === WebSocket.OPEN) {
+      if (added.length) this.pumpWs.send(JSON.stringify({ method: 'subscribeAccountTrade', keys: added }));
+      if (removed.length) this.pumpWs.send(JSON.stringify({ method: 'unsubscribeAccountTrade', keys: removed }));
+    }
+  }
+
+  private onKolBuySignal(
+    msg: { signature?: string; mint?: string; traderPublicKey?: string; symbol?: string; solAmount?: number; vSolInBondingCurve?: number; vTokensInBondingCurve?: number; pool?: string },
+    ws: WebSocket,
+  ) {
+    const cfg = this.cp.configState().config;
+    if (!cfg.strategy.modes.kol_backrun || !msg.mint || !msg.traderPublicKey) return;
+    const kol = this.cp.snapshot().kols.find((k) => k.enabled && k.pubkey === msg.traderPublicKey);
+    if (!kol) return;
+    if (msg.vSolInBondingCurve && msg.vSolInBondingCurve > kol.maxCurveReserveSol) return;
+
+    const ts = Date.now();
+    const slot = this.lastSlot;
+    const symbol = (msg.symbol || msg.mint.slice(0, 4)).trim().slice(0, 16);
+    const ev: FeedEvent = {
+      id: `kol_${(msg.signature || msg.mint).slice(0, 16)}`,
+      ts,
+      slot,
+      kind: 'kol_buy',
+      kolId: kol.id,
+      mint: msg.mint,
+      symbol,
+      venue: msg.pool === 'raydium' ? 'Raydium LaunchLab' : 'Pump.fun',
+      sizeSol: kol.buySizeSol,
+      fanout: 0,
+      winner: null,
+      cuUsed: 0,
+      reverts: ZERO_REVERTS,
+      outcome: 'shadow',
+      note: `Copied ${kol.label} · live mainnet`,
+    };
+    this.cp.ingestExternalEvent({ type: 'kol_shred_detected', ts, slot, kolId: kol.id, mint: ev.mint, symbol, venue: ev.venue });
+    this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, msg.signature ?? null);
+    if (this.cp.engineStatus === 'SHADOW' && this.paper.size < 5 && !this.paper.has(msg.mint)) {
+      this.openPaperPosition(ev, kol.buySizeSol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws);
+    }
+  }
+
   private listPaperPositions(): Position[] {
     return [...this.paper.values()].map((e) => e.pos);
   }
 
-  private openPaperPosition(ev: FeedEvent, vSol?: number, vTokens?: number, ws?: WebSocket) {
+  private openPaperPosition(ev: FeedEvent, desiredBuySol: number, vSol?: number, vTokens?: number, ws?: WebSocket) {
     const cfg = this.cp.configState().config;
-    const entrySol = Math.max(0.05, Math.min(10, cfg.strategy.default_buy_sol || 1));
-    const entryPrice = vSol && vTokens && vSol > 0 && vTokens > 0 ? vSol / vTokens : 30 / 1_073_000_000;
+    const entrySol = Math.max(0.01, Math.min(100, desiredBuySol || cfg.strategy.default_buy_sol || 1));
+    const rawPrice = vSol && vTokens && vSol > 0 && vTokens > 0 ? vSol / vTokens : 30 / 1_073_000_000;
+    // Apply realistic 0.5% simulated fill slippage so paper PnL matches real mainnet fills.
+    const entryPrice = rawPrice * 1.005;
     const tokens = entrySol / entryPrice;
     const pos: Position = {
       id: `paper_${ev.mint.slice(0, 12)}`,
@@ -290,19 +359,20 @@ export class SolanaLiveFeed {
       symbol: ev.symbol,
       image: ev.image,
       venue: ev.venue,
-      kolId: null,
+      kolId: ev.kolId,
       openedAt: ev.ts,
       openedSlot: ev.slot,
       entrySol,
       initialTokens: tokens,
       tokens,
       entryPrice,
-      price: entryPrice,
+      price: rawPrice,
       realizedSol: 0,
       proceedsSol: 0,
       pendingSell: null,
     };
-    this.paper.set(ev.mint, { pos, firedSteps: new Set() });
+    this.paper.set(ev.mint, { pos, peakPrice: rawPrice, firedSteps: new Set() });
+    console.log(`[solana-feed] Shadow paper buy opened: $${ev.symbol} (${entrySol} SOL @ ${entryPrice.toExponential(3)})`);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [ev.mint] }));
     }
@@ -314,18 +384,34 @@ export class SolanaLiveFeed {
     if (!entry || !vSol || !vTokens || vSol <= 0 || vTokens <= 0) return;
     const price = vSol / vTokens;
     entry.pos = { ...entry.pos, price };
+    if (price > entry.peakPrice) entry.peakPrice = price;
 
     const mult = entry.pos.entryPrice > 0 ? price / entry.pos.entryPrice : 1;
     const exits = this.cp.configState().config.exits;
     const slPct = exits.stop_loss_pct ?? 30;
 
-    // 1. Stop-loss check
+    // 1. Curve liquidity floor protection (same as live Lighthouse guard)
+    if (exits.curve_floor.enabled && vSol < exits.curve_floor.min_real_sol_reserves_sol) {
+      this.closePaperPosition(mint, 'Shadow curve floor');
+      return;
+    }
+
+    // 2. Hard stop-loss check
     if (slPct > 0 && mult <= 1 - slPct / 100) {
       this.closePaperPosition(mint, `Shadow stop-loss (-${slPct}%)`);
       return;
     }
 
-    // 2. Exit ladder take-profit rungs
+    // 3. Trailing stop-loss check from peak price
+    if (exits.trailing_stop_pct && exits.trailing_stop_pct > 0 && entry.peakPrice > entry.pos.entryPrice) {
+      const dropFromPeak = (entry.peakPrice - price) / entry.peakPrice;
+      if (dropFromPeak >= exits.trailing_stop_pct / 100) {
+        this.closePaperPosition(mint, `Shadow trailing stop (-${exits.trailing_stop_pct}%)`);
+        return;
+      }
+    }
+
+    // 4. Exit ladder take-profit rungs (pnl_multiple)
     for (let i = 0; i < exits.ladder.length; i++) {
       const step = exits.ladder[i];
       if (entry.firedSteps.has(i) || step.trigger.kind !== 'pnl_multiple') continue;
@@ -336,7 +422,7 @@ export class SolanaLiveFeed {
           return;
         }
         const sellTokens = entry.pos.tokens * (step.sell_pct / 100);
-        const proceeds = sellTokens * price;
+        const proceeds = sellTokens * price * 0.995;
         entry.pos = {
           ...entry.pos,
           tokens: entry.pos.tokens - sellTokens,
@@ -353,7 +439,7 @@ export class SolanaLiveFeed {
     const entry = this.paper.get(mint);
     if (!entry) return;
     this.paper.delete(mint);
-    const remainingProceeds = entry.pos.tokens * entry.pos.price;
+    const remainingProceeds = entry.pos.tokens * entry.pos.price * 0.995;
     const totalProceeds = +((entry.pos.proceedsSol ?? 0) + remainingProceeds).toFixed(6);
     const closed: ClosedPosition = {
       id: `cl_${entry.pos.id}_${Date.now().toString(36)}`,
@@ -377,8 +463,31 @@ export class SolanaLiveFeed {
 
   private sweepExpiredPaperPositions() {
     const now = Date.now();
+    const exits = this.cp.configState().config.exits;
     for (const [mint, entry] of this.paper.entries()) {
-      if (now - entry.pos.openedAt >= 5 * 60_000) {
+      const heldSecs = (now - entry.pos.openedAt) / 1000;
+      // Evaluate time_secs exit ladder rungs
+      for (let i = 0; i < exits.ladder.length; i++) {
+        const step = exits.ladder[i];
+        if (entry.firedSteps.has(i) || step.trigger.kind !== 'time_secs') continue;
+        if (heldSecs >= step.trigger.value) {
+          entry.firedSteps.add(i);
+          if (step.sell_pct >= 100) {
+            this.closePaperPosition(mint, `Shadow time rung (${step.trigger.value}s)`);
+            break;
+          }
+          const sellTokens = entry.pos.tokens * (step.sell_pct / 100);
+          const proceeds = sellTokens * entry.pos.price * 0.995;
+          entry.pos = {
+            ...entry.pos,
+            tokens: entry.pos.tokens - sellTokens,
+            proceedsSol: +((entry.pos.proceedsSol ?? 0) + proceeds).toFixed(6),
+            realizedSol: +(entry.pos.realizedSol + proceeds).toFixed(6),
+          };
+          this.cp.updatePaperState(this.listPaperPositions());
+        }
+      }
+      if (this.paper.has(mint) && heldSecs >= 300) {
         this.closePaperPosition(mint, 'Shadow time cap (5m)');
       }
     }

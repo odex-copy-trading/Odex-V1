@@ -3,9 +3,10 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
-import { Activity, Radio, Settings, Users, Wallet, WifiOff, X, Zap, type LucideIcon } from '@/components/icons';
+import { Activity, Coins, Radio, Settings, Users, Wallet, WifiOff, X, Zap, type LucideIcon } from '@/components/icons';
 import { cx } from '@/components/ui';
 import { BottomBar, EngineRailButton, KillSwitchRailButton, TopBar } from '@/components/shell/StatusBar';
+import { PhantomProvider } from '@/lib/phantom';
 import { TerminalProvider, useTerminal } from '@/lib/store';
 import { LoginScreen } from '@/components/shell/LoginScreen';
 
@@ -13,7 +14,8 @@ const NAV: { href: string; label: string; short: string; icon: LucideIcon }[] = 
   { href: '/', label: 'Overview / Live feed', short: 'Live', icon: Radio },
   { href: '/watchlist', label: 'KOL watchlist', short: 'KOLs', icon: Users },
   { href: '/execution', label: 'Execution & landers', short: 'Landers', icon: Zap },
-  { href: '/treasury', label: 'Treasury & inventory', short: 'Treasury', icon: Wallet },
+  { href: '/treasury', label: 'Treasury & inventory', short: 'Treasury', icon: Coins },
+  { href: '/wallets', label: 'Wallets', short: 'Wallets', icon: Wallet },
 ];
 const DIAGNOSTICS = { href: '/diagnostics', label: 'Bug & system diagnostics', short: 'Diag', icon: Activity };
 const SETTINGS = { href: '/settings', label: 'Settings', short: 'Settings', icon: Settings };
@@ -97,6 +99,7 @@ function Gate({ children }: { children: ReactNode }) {
 export function AppShell({ children }: { children: ReactNode }) {
   return (
     <TerminalProvider>
+      <PhantomProvider>
       <Gate>
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[70] focus:rounded-lg focus:bg-fg focus:px-3 focus:py-2 focus:text-black">Skip to content</a>
       <div className="flex min-h-screen">
@@ -110,6 +113,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </div>
       </Gate>
       <Toasts />
+      </PhantomProvider>
     </TerminalProvider>
   );
 }

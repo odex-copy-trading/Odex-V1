@@ -4,6 +4,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { Snowflake, Upload, Zap } from '@/components/icons';
 import { Badge, Skeleton, cx } from '@/components/ui';
+import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
 import { portfolioUsd, useCommand, useTerminal } from '@/lib/store';
 import { fmtSol, fmtUsd, tone } from '@/lib/format';
 import type { FeedEvent } from '@/lib/types';
@@ -37,6 +38,7 @@ function Kpi({ label, extra, children, sub, first }: { label: string; extra?: Re
 
 export function OverviewView() {
   const { state } = useTerminal();
+  const [paperStartSol] = usePaperBalance();
   const { run, busy } = useCommand();
   const [tab, setTab] = useState<Tab>('positions');
   const [source, setSource] = useState<Source>('all');
@@ -60,7 +62,8 @@ export function OverviewView() {
   const unrealSol = openValue - openCost;
   const pnlSol = realizedSol + unrealSol;
   const pnlUsd = realizedUsd + unrealSol * px;
-  const total = portfolioUsd(state);
+  const isShadow = state.engine.status === 'SHADOW';
+  const total = isShadow ? computePaperEquitySol(state, paperStartSol) * px : portfolioUsd(state);
   const won = closedP.filter((c) => c.proceedsSol > c.entrySol).length;
   const winRate = closedP.length ? (won / closedP.length) * 100 : null;
   const enabled = state.kols.filter((k) => k.enabled).length;

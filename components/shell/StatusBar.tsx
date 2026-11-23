@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { Bell, ChevronDown, Eye, OctagonX, Pause, Play, Plus, Power, Search, Users, Wallet } from '@/components/icons';
+import { Bell, ChevronDown, Copy, Download, Eye, OctagonX, Pause, Play, Plus, Power, Search, Users, Wallet } from '@/components/icons';
 import { Badge, Button, Dot, Modal, Skeleton, cx } from '@/components/ui';
+import { usePhantom } from '@/lib/phantom';
+import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
 import { isPubkey } from '@/lib/pubkey';
 import { portfolioUsd, useCommand, useTerminal } from '@/lib/store';
 import { fmtAgo, fmtInt, fmtSlot, fmtSol, fmtUsd, shortKey } from '@/lib/format';
@@ -165,45 +167,190 @@ function usePopover() {
 
 const panel = 'absolute right-0 top-12 z-40 rounded-2xl border border-line2 bg-panel shadow-2xl';
 
+function PhantomLogo() {
+  return (
+    <svg viewBox="0 0 128 128" className="size-4 shrink-0" aria-hidden>
+      <rect width="128" height="128" rx="30" fill="#AB9FF2" />
+      <path d="M98.5 64.5C98.5 85.4 81.9 99 61 99H36.6C31.5 99 28 94.3 29.2 89.3C33.4 72.1 45.7 39 67.5 39C85.6 39 98.5 50.2 98.5 64.5Z" fill="#FFFDF8" />
+      <ellipse cx="64.5" cy="61" rx="4.5" ry="6.5" fill="#1C1917" />
+      <ellipse cx="79.5" cy="61" rx="4.5" ry="6.5" fill="#1C1917" />
+    </svg>
+  );
+}
+
 function WalletPill() {
-  const { state } = useTerminal();
+  const { state, toast } = useTerminal();
+  const phantom = usePhantom();
+  const [paperStartSol] = usePaperBalance();
   const { open, setOpen, ref } = usePopover();
+  const [depositOpen, setDepositOpen] = useState(false);
   const b = state.balances, loading = state.connection === 'connecting';
-  const inv = state.inventory.reduce((a, i) => a + i.amount * i.priceUsd, 0);
-  const rows: [string, string, string][] = [
-    ['Native SOL', `${fmtSol(b.sol, 4)} SOL`, fmtUsd(b.sol * b.solUsd)],
-    ['WSOL vault', `${fmtSol(b.wsol, 4)} WSOL`, fmtUsd(b.wsol * b.solUsd)],
-    ['USDC treasury', `${fmtInt(Math.round(b.usdc))} USDC`, fmtUsd(b.usdc)],
-    ['Quote inventory', `${state.inventory.filter((i) => i.amount > 0).length} assets`, fmtUsd(inv)],
-  ];
+  const isShadow = state.engine.status === 'SHADOW';
+  const hotWallet = state.config?.config.wallets.hot_wallet_pubkey || phantom.publicKey || '';
+  const paperEquitySol = computePaperEquitySol(state, paperStartSol);
+  const displaySol = isShadow
+    ? paperEquitySol
+    : phantom.connected && phantom.solBalance != null && b.sol === 0
+      ? phantom.solBalance
+      : b.sol;
+  const displayUsd = displaySol * b.solUsd;
+  const active = isShadow || state.engineSource === 'bridge' || phantom.connected || !!hotWallet;
+
+  const copyAddr = async (addr: string, label: string) => {
+    if (!addr) return;
+    try { await navigator.clipboard.writeText(addr); toast(`${label} copied`, 'ok'); }
+    catch { toast('Copy failed', 'error'); }
+  };
+
   return (
     <div className="relative" ref={ref}>
       <button type="button" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((o) => !o)}
         className="glass-pill inline-flex h-10 items-center gap-2.5 rounded-full px-4 text-[0.95rem] font-semibold">
-        <Wallet className="size-4 text-fg2" aria-hidden />
+        {isShadow ? (
+          <span className="relative inline-flex items-center text-sky-400">
+            <Eye className="size-4" aria-hidden />
+            <span className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full border border-panel bg-emerald-400" />
+          </span>
+        ) : phantom.connected ? (
+          <span className="relative inline-flex items-center">
+            <PhantomLogo />
+            <span className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full border border-panel bg-emerald-400" />
+          </span>
+        ) : (
+          <Wallet className="size-4 text-fg2" aria-hidden />
+        )}
         <span aria-hidden className="h-4 w-px bg-white/10" />
         <SolanaLogo />
-        {loading ? <Skeleton className="h-4 w-20" /> : <span className="tabular-nums">{fmtSol(b.sol, 4)} <span className="hidden sm:inline">SOL</span></span>}
+        {loading ? <Skeleton className="h-4 w-20" /> : <span className="tabular-nums">{fmtSol(displaySol, 4)} <span className="hidden sm:inline">SOL</span></span>}
         <ChevronDown className="hidden size-4 text-muted sm:block" aria-hidden />
       </button>
+
       {open && (
-        <div role="dialog" aria-label="Balances" className={cx(panel, 'w-[min(20rem,calc(100vw-1.5rem))] p-2')}>
-          <div className="px-3 pb-2 pt-1.5">
-            <div className="text-xs text-muted">Total portfolio</div>
-            <div className="mt-0.5 text-2xl font-bold tabular-nums">{fmtUsd(portfolioUsd(state))}</div>
-            <div className="mt-0.5 text-xs text-muted tabular-nums">SOL @ {fmtUsd(b.solUsd)}</div>
+        <div role="dialog" aria-label="Bot Wallet" className={cx(panel, 'w-[min(21.5rem,calc(100vw-1.5rem))] rounded-[1.35rem] border-white/10 bg-[#0c0d12] p-3.5')}>
+          {/* Bot Wallet inner card */}
+          <div className="relative overflow-hidden rounded-2xl border border-white/[0.08] bg-gradient-to-br from-[#141622] via-[#10111a] to-[#0d0e15] p-4">
+            {/* Subtle Solana watermark on right */}
+            <svg viewBox="0 0 397.7 311.7" aria-hidden className="pointer-events-none absolute -right-4 bottom-1 w-28 opacity-[0.06]">
+              <path fill="#14F195" d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7z" />
+              <path fill="#00C2FF" d="M64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8z" />
+              <path fill="#9945FF" d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" />
+            </svg>
+
+            <div className="relative flex items-start justify-between gap-2">
+              <div className="flex items-center gap-3">
+                <span className="grid size-10 shrink-0 place-items-center rounded-full border border-white/[0.08] bg-black/55">
+                  <SolanaLogo />
+                </span>
+                <div className="min-w-0">
+                  <div className="text-[0.95rem] font-semibold leading-tight text-fg">
+                    {isShadow ? 'Shadow Paper Wallet' : 'Bot Wallet'}
+                  </div>
+                  <div className="mt-1 flex items-center gap-1.5 text-xs text-muted">
+                    <span className="num truncate" title={isShadow ? 'Simulated Shadow Paper Wallet' : hotWallet || undefined}>
+                      {isShadow ? 'Paper Simulator' : hotWallet ? shortKey(hotWallet, 4) : 'Not set'}
+                    </span>
+                    {!isShadow && hotWallet && (
+                      <button
+                        type="button"
+                        onClick={() => void copyAddr(hotWallet, 'Bot wallet address')}
+                        aria-label="Copy bot wallet address"
+                        className="grid size-5.5 place-items-center rounded-full bg-white/[0.07] text-fg2 hover:bg-white/[0.14] hover:text-fg"
+                      >
+                        <Copy className="size-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <span className={cx(
+                'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.72rem] font-semibold',
+                active ? 'bg-emerald-500/15 text-emerald-400' : 'bg-white/[0.06] text-muted',
+              )}>
+                <span className={cx('size-1.5 rounded-full', active ? 'bg-emerald-400' : 'bg-muted')} />
+                {active ? 'Active' : 'Idle'}
+              </span>
+            </div>
+
+            <div className="relative mt-5">
+              <div className="flex items-baseline gap-1.5 tabular-nums">
+                <span className="text-[1.75rem] font-bold leading-none tracking-tight text-white">{fmtSol(displaySol, 4)}</span>
+                <span className="text-sm font-medium text-muted">SOL</span>
+              </div>
+              <div className="mt-1.5 text-xs text-muted tabular-nums">
+                ≈ {fmtUsd(displayUsd)} · {b.usdc.toFixed(2)} USDC
+              </div>
+            </div>
           </div>
-          <ul className="divide-y divide-line rounded-xl border border-line">
-            {rows.map(([l, v, u]) => (
-              <li key={l} className="flex items-center justify-between gap-3 px-3 py-2.5 text-sm">
-                <span className="text-fg2">{l}</span>
-                <span className="text-right tabular-nums"><span className="block font-medium">{v}</span><span className="block text-xs text-muted">{u}</span></span>
-              </li>
-            ))}
-          </ul>
-          <Link href="/treasury" onClick={() => setOpen(false)} className="mt-2 flex h-9 items-center justify-center gap-2 rounded-xl text-sm text-fg2 hover:bg-raised hover:text-fg"><Wallet className="size-4" aria-hidden />Open treasury</Link>
+
+          {/* Phantom connect row */}
+          <div className="flex items-center justify-between px-1.5 py-3.5 text-sm">
+            <span className="text-fg2">Phantom</span>
+            {phantom.connected && phantom.publicKey ? (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="num text-emerald-300" title={phantom.publicKey}>{shortKey(phantom.publicKey, 4)}</span>
+                <button
+                  type="button"
+                  onClick={() => void phantom.disconnect().then(() => toast('Phantom disconnected', 'info'))}
+                  className="text-muted underline underline-offset-4 hover:text-rose-300"
+                >
+                  Disconnect
+                </button>
+              </div>
+            ) : phantom.installed ? (
+              <button
+                type="button"
+                disabled={phantom.connecting}
+                onClick={() => void phantom.connect().then((pk) => { if (pk) toast(`Connected Phantom (${shortKey(pk, 4)})`, 'ok'); })}
+                className="font-medium text-[#8b8fff] underline decoration-[#8b8fff]/70 underline-offset-4 hover:text-indigo-300 disabled:opacity-60"
+              >
+                {phantom.connecting ? 'Connecting…' : 'Connect'}
+              </button>
+            ) : (
+              <a
+                href="https://phantom.app/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-[#8b8fff] underline decoration-[#8b8fff]/70 underline-offset-4 hover:text-indigo-300"
+              >
+                Install
+              </a>
+            )}
+          </div>
+          {phantom.error && <p className="-mt-2 mb-2 px-1.5 text-[0.7rem] text-rose-300">{phantom.error}</p>}
+
+          {/* Action pills */}
+          <div className="flex flex-col gap-2.5">
+            <button
+              type="button"
+              onClick={() => { setOpen(false); setDepositOpen(true); }}
+              className="inline-flex h-10.5 w-full items-center justify-center gap-2 rounded-full bg-[#6c75f5] px-4 text-sm font-semibold text-white transition-colors hover:bg-[#7c84ff]"
+            >
+              <Download className="size-4" aria-hidden />
+              Deposit
+            </button>
+            <Link
+              href="/wallets"
+              onClick={() => setOpen(false)}
+              className="inline-flex h-10.5 w-full items-center justify-center gap-1 rounded-full bg-white px-4 text-sm font-semibold text-black transition-colors hover:bg-zinc-200"
+            >
+              Manage wallet <span aria-hidden className="text-base leading-none">›</span>
+            </Link>
+          </div>
         </div>
       )}
+
+      <Modal open={depositOpen} onClose={() => setDepositOpen(false)} title="Deposit SOL to Bot Wallet">
+        <p className="text-sm text-fg2">Send native SOL from Phantom or any Solana wallet to your hot trading wallet address below:</p>
+        <div className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-line2 bg-card px-3 py-2.5">
+          <code className="num break-all text-xs text-fg">{hotWallet || 'Set your Hot wallet public key in Settings → Wallets & Nonce Pool'}</code>
+          {hotWallet && (
+            <Button size="sm" variant="ghost" icon={Copy} onClick={() => void copyAddr(hotWallet, 'Bot wallet address')}>Copy</Button>
+          )}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button onClick={() => setDepositOpen(false)}>Close</Button>
+        </div>
+      </Modal>
     </div>
   );
 }
