@@ -44,7 +44,7 @@ export class SolanaLiveFeed {
   private priceTimer: ReturnType<typeof setInterval> | null = null;
   private paperTimer: ReturnType<typeof setInterval> | null = null;
   private paperPriceTimer: ReturnType<typeof setInterval> | null = null;
-  private paper = new Map<string, { pos: Position; peakPrice: number; firedSteps: Set<number> }>();
+  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; firedSteps: Set<number> }>();
   private watchedKolKeys = new Set<string>();
   private solUsd = 0;
   private solBalance = 0;
@@ -355,10 +355,21 @@ export class SolanaLiveFeed {
     const buySol = Math.max(0.01, Math.min(100, desiredBuySol || cfg.strategy.default_buy_sol || 1));
     const buyFeeSol = this.cp.estimateExecutionFeeSol();
     const entrySol = +(buySol + buyFeeSol).toFixed(6);
-    const rawPrice = vSol && vTokens && vSol > 0 && vTokens > 0 ? vSol / vTokens : 30 / 1_073_000_000;
-    // Real mainnet buy cost: Pump.fun 1% protocol fee + 0.5% slippage + SWQoS/priority/revert fees in entrySol.
-    const entryPrice = rawPrice * 1.015;
-    const tokens = buySol / entryPrice;
+
+    // Exact Pump.fun constant-product AMM (x * y = k) + competing sniper front-run impact (+1 slot realism).
+    const baseVSol = vSol && vSol > 0 ? vSol : 30;
+    const baseVTokens = vTokens && vTokens > 0 ? vTokens : 1_073_000_000;
+    const competitionSol = ev.sizeSol >= 1.0 ? 1.5 : 0.6; // competing bots landing ahead in same/+1 slot
+    const preVSol = baseVSol + competitionSol;
+    const preVTokens = (baseVSol * baseVTokens) / preVSol;
+
+    const netSolIn = buySol * 0.99; // Pump.fun 1% protocol fee
+    const tokens = (preVTokens * netSolIn) / (preVSol + netSolIn);
+    const effectiveEntryPrice = buySol / tokens;
+    const postVSol = preVSol + netSolIn;
+    const postVTokens = preVTokens - tokens;
+    const markPrice = postVSol / postVTokens;
+
     const pos: Position = {
       id: `paper_${ev.mint.slice(0, 12)}`,
       mint: ev.mint,
@@ -371,18 +382,27 @@ export class SolanaLiveFeed {
       entrySol,
       initialTokens: tokens,
       tokens,
-      entryPrice,
-      price: rawPrice,
+      entryPrice: effectiveEntryPrice,
+      price: markPrice,
       realizedSol: 0,
       proceedsSol: 0,
       pendingSell: null,
     };
-    this.paper.set(ev.mint, { pos, peakPrice: rawPrice, firedSteps: new Set() });
-    console.log(`[solana-feed] Shadow paper buy opened: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee @ ${entryPrice.toExponential(3)})`);
+    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, firedSteps: new Set() });
+    console.log(`[solana-feed] Shadow AMM buy: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee, vSol=${postVSol.toFixed(1)}, effPx=${effectiveEntryPrice.toExponential(3)})`);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [ev.mint] }));
     }
     this.cp.updatePaperState(this.listPaperPositions(), undefined, true);
+  }
+
+  /** Computes exact constant-product AMM sell proceeds after Pump.fun 1% fee & SWQoS execution fee. */
+  private calcAmmSellProceeds(sellTokens: number, markPrice: number, vSol: number): number {
+    const curveSol = Math.max(30, vSol);
+    const curveTokens = curveSol / markPrice;
+    const grossSolOut = (curveSol * sellTokens) / (curveTokens + sellTokens);
+    const sellFeeSol = this.cp.estimateExecutionFeeSol();
+    return Math.max(0, grossSolOut * 0.99 - sellFeeSol);
   }
 
   private onPaperTrade(mint: string, vSol?: number, vTokens?: number) {
@@ -420,6 +440,7 @@ export class SolanaLiveFeed {
     const entry = this.paper.get(mint);
     if (!entry || !Number.isFinite(price) || price <= 0) return;
     entry.pos = { ...entry.pos, price };
+    if (vSol && vSol > 0) entry.vSol = vSol;
     if (price > entry.peakPrice) entry.peakPrice = price;
 
     const mult = entry.pos.entryPrice > 0 ? price / entry.pos.entryPrice : 1;
@@ -458,8 +479,7 @@ export class SolanaLiveFeed {
           return;
         }
         const sellTokens = entry.pos.tokens * (step.sell_pct / 100);
-        const sellFeeSol = this.cp.estimateExecutionFeeSol();
-        const proceeds = Math.max(0, sellTokens * price * 0.985 - sellFeeSol);
+        const proceeds = this.calcAmmSellProceeds(sellTokens, price, entry.vSol);
         entry.pos = {
           ...entry.pos,
           tokens: entry.pos.tokens - sellTokens,
@@ -476,9 +496,7 @@ export class SolanaLiveFeed {
     const entry = this.paper.get(mint);
     if (!entry) return;
     this.paper.delete(mint);
-    const sellFeeSol = this.cp.estimateExecutionFeeSol();
-    // Pump.fun 1% protocol fee + 0.5% slippage + SWQoS/priority/revert sell fees
-    const remainingProceeds = Math.max(0, entry.pos.tokens * entry.pos.price * 0.985 - sellFeeSol);
+    const remainingProceeds = this.calcAmmSellProceeds(entry.pos.tokens, entry.pos.price, entry.vSol);
     const totalProceeds = +((entry.pos.proceedsSol ?? 0) + remainingProceeds).toFixed(6);
     const closed: ClosedPosition = {
       id: `cl_${entry.pos.id}_${Date.now().toString(36)}`,
@@ -516,8 +534,7 @@ export class SolanaLiveFeed {
             break;
           }
           const sellTokens = entry.pos.tokens * (step.sell_pct / 100);
-          const sellFeeSol = this.cp.estimateExecutionFeeSol();
-          const proceeds = Math.max(0, sellTokens * entry.pos.price * 0.985 - sellFeeSol);
+          const proceeds = this.calcAmmSellProceeds(sellTokens, entry.pos.price, entry.vSol);
           entry.pos = {
             ...entry.pos,
             tokens: entry.pos.tokens - sellTokens,

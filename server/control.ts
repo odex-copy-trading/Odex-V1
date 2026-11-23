@@ -81,7 +81,8 @@ export class ControlPlane extends EventEmitter {
     const enabled = Object.entries(l.providers).filter(([, p]) => p.enabled && p.fanout > 0);
     const totalFanout = enabled.reduce((a, [, p]) => a + p.fanout, 0);
     const tipped = enabled.filter(([id]) => id !== 'tpu').map(([, p]) => (p.min_tip_sol + p.max_tip_sol) / 2);
-    const landerTip = tipped.length ? Math.min(...tipped) : 0;
+    // Use configured SWQoS tip if enabled, otherwise realistic 0.002 SOL baseline tip for live-parity simulation.
+    const landerTip = tipped.length ? Math.min(...tipped) : 0.002;
     const prioritySol = (l.tx.priority_fee_lamports || 0) / 1e9;
     const baseFeeSol = 0.000_005;
     const dupRevertsSol = Math.max(0, totalFanout - 1) * 0.000_006;
@@ -351,8 +352,11 @@ export class ControlPlane extends EventEmitter {
     if (pos.id.startsWith('paper_')) {
       const sellTokens = pos.tokens * (pct / 100);
       const sellFeeSol = this.estimateExecutionFeeSol();
-      // Pump.fun 1% protocol fee + 0.5% slippage + Solana/SWQoS sell tx fees
-      const proceeds = Math.max(0, sellTokens * pos.price * 0.985 - sellFeeSol);
+      // Exact constant-product AMM sell impact (assuming ~35 SOL curve depth) + Pump.fun 1% protocol fee + SWQoS/priority fees
+      const estCurveSol = Math.max(30, sellTokens * pos.price * 12);
+      const estCurveTokens = estCurveSol / pos.price;
+      const grossSolOut = (estCurveSol * sellTokens) / (estCurveTokens + sellTokens);
+      const proceeds = Math.max(0, grossSolOut * 0.99 - sellFeeSol);
       const totalProceeds = (pos.proceedsSol ?? 0) + proceeds;
       let closed: ClosedPosition | undefined;
       if (pct >= 100 || pos.tokens - sellTokens <= 1e-6) {
