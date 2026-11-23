@@ -45,7 +45,7 @@ export class SolanaLiveFeed {
   private paperTimer: ReturnType<typeof setInterval> | null = null;
   private paperPriceTimer: ReturnType<typeof setInterval> | null = null;
   private curvePriceTimer: ReturnType<typeof setInterval> | null = null;
-  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; firedSteps: Set<number> }>();
+  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; instantTpFired: boolean; firedSteps: Set<number> }>();
   private watchedKolKeys = new Set<string>();
   private solUsd = 0;
   private solBalance = 0;
@@ -250,11 +250,12 @@ export class SolanaLiveFeed {
       this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, msg.signature ?? null);
       const cfg = this.cp.configState().config;
       const withinCurve = !msg.vSolInBondingCurve || msg.vSolInBondingCurve <= cfg.strategy.max_curve_reserve_sol;
+      // Selective launch snipe filter (Fhbh1D style: skip <0.5 SOL spam micro-launches, keep high-conviction launches)
       if (
         this.cp.engineStatus === 'SHADOW' &&
         cfg.strategy.modes.pumpfun_create_snipe &&
         withinCurve &&
-        sizeSol >= 0.05 &&
+        sizeSol >= 0.5 &&
         this.paper.size < 5 &&
         !this.paper.has(msg.mint)
       ) {
@@ -395,7 +396,7 @@ export class SolanaLiveFeed {
       proceedsSol: 0,
       pendingSell: null,
     };
-    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, firedSteps: new Set() });
+    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, instantTpFired: false, firedSteps: new Set() });
     console.log(`[solana-feed] Shadow AMM buy: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee, vSol=${postVSol.toFixed(1)}, curve=${bondingCurveKey ?? 'n/a'})`);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [ev.mint] }));
@@ -535,7 +536,24 @@ export class SolanaLiveFeed {
       }
     }
 
-    // 4. Exit ladder take-profit rungs (pnl_multiple)
+    // 3b. Fhbh1D-style Instant 25% Take-Profit clip on early momentum pop (+15%+)
+    if (!entry.instantTpFired && exits.instant_tp_pct > 0 && mult >= 1.15) {
+      entry.instantTpFired = true;
+      if (exits.instant_tp_pct >= 100) {
+        this.closePaperPosition(mint, `Shadow instant TP (${exits.instant_tp_pct}%)`);
+        return false;
+      }
+      const sellTokens = entry.pos.tokens * (exits.instant_tp_pct / 100);
+      const proceeds = this.calcAmmSellProceeds(sellTokens, price, entry.vSol);
+      entry.pos = {
+        ...entry.pos,
+        tokens: entry.pos.tokens - sellTokens,
+        proceedsSol: +((entry.pos.proceedsSol ?? 0) + proceeds).toFixed(6),
+        realizedSol: +(entry.pos.realizedSol + proceeds).toFixed(6),
+      };
+    }
+
+    // 4. Exit ladder take-profit rungs (pnl_multiple: e.g. 15% @ 2x, 33% @ 3x, 100%)
     for (let i = 0; i < exits.ladder.length; i++) {
       const step = exits.ladder[i];
       if (entry.firedSteps.has(i) || step.trigger.kind !== 'pnl_multiple') continue;
