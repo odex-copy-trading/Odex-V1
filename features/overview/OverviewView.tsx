@@ -8,21 +8,12 @@ import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
 import { portfolioUsd, useCommand, useTerminal } from '@/lib/store';
 import { fmtSol, fmtUsd, tone } from '@/lib/format';
 import type { FeedEvent } from '@/lib/types';
+import { DateRangePicker, PnlCalendarButton, rangeForPreset, type DateRangeValue } from './DateAndPnlCalendar';
 import { PctChip } from './shared';
 import { ClosedTab, PositionsTab, SignalsTab, TableSkeleton } from './tables';
 
 type Tab = 'positions' | 'closed' | 'signals';
 type Source = 'all' | 'kol' | 'launch';
-type Period = '1h' | 'today' | 'all';
-const PERIODS: Record<Period, string> = { '1h': 'Last hour', today: 'Today', all: 'All time' };
-
-function sinceOf(p: Period) {
-  if (p === 'all') return 0;
-  if (p === '1h') return Date.now() - 3_600_000;
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
 
 const Sep = () => <span aria-hidden className="h-4 w-px bg-line2" />;
 
@@ -42,16 +33,21 @@ export function OverviewView() {
   const { run, busy } = useCommand();
   const [tab, setTab] = useState<Tab>('positions');
   const [source, setSource] = useState<Source>('all');
-  const [period, setPeriod] = useState<Period>('today');
+  const [dateRange, setDateRange] = useState<DateRangeValue>(() => rangeForPreset('today'));
   const [unit, setUnit] = useState<'USD' | 'SOL'>('USD');
   const [frozen, setFrozen] = useState<FeedEvent[] | null>(null);
   const loading = state.connection === 'connecting';
   const px = state.balances.solUsd;
-  const since = sinceOf(period);
 
   const open = state.positions;
-  const closedP = useMemo(() => state.closed.filter((c) => c.closedAt >= since), [state.closed, since]);
-  const signalsP = useMemo(() => (frozen ?? state.feed).filter((e) => e.ts >= since), [frozen, state.feed, since]);
+  const closedP = useMemo(
+    () => state.closed.filter((c) => c.closedAt >= dateRange.start && c.closedAt <= dateRange.end),
+    [state.closed, dateRange],
+  );
+  const signalsP = useMemo(
+    () => (frozen ?? state.feed).filter((e) => e.ts >= dateRange.start && e.ts <= dateRange.end),
+    [frozen, state.feed, dateRange],
+  );
   const bySource = <T extends { kolId: string | null }>(xs: T[], s: Source) => (s === 'all' ? xs : xs.filter((x) => (s === 'kol' ? !!x.kolId : !x.kolId)));
 
   // KPIs, scoped to the selected period like the reference design
@@ -67,7 +63,7 @@ export function OverviewView() {
   const won = closedP.filter((c) => c.proceedsSol > c.entrySol).length;
   const winRate = closedP.length ? (won / closedP.length) * 100 : null;
   const enabled = state.kols.filter((k) => k.enabled).length;
-  const kolFills = state.feed.filter((e) => e.ts >= since && e.kind === 'kol_buy' && e.outcome === 'filled').length;
+  const kolFills = state.feed.filter((e) => e.ts >= dateRange.start && e.ts <= dateRange.end && e.kind === 'kol_buy' && e.outcome === 'filled').length;
   const shadow = state.engine.status === 'SHADOW';
   const killed = state.engine.status === 'KILLED';
   const now = new Date();
@@ -126,17 +122,15 @@ export function OverviewView() {
             <span className={cx('relative h-6 w-10 rounded-full transition-colors', shadow ? 'bg-emerald-500' : 'bg-line2')}><span className={cx('absolute top-0.5 size-5 rounded-full bg-white transition-[left]', shadow ? 'left-[1.15rem]' : 'left-0.5')} /></span>
           </button>
           <Link href="/execution" className="inline-flex h-10 items-center gap-2 rounded-[0.75rem] border border-line bg-card px-4 text-[0.95rem] font-medium hover:bg-raised"><Zap className="size-4" aria-hidden />Landers</Link>
-          <select aria-label="Period" value={period} onChange={(e) => setPeriod(e.target.value as Period)}
-            className="h-10 rounded-[0.75rem] border border-line bg-card px-4 text-[0.95rem] font-medium outline-none">
-            {(Object.keys(PERIODS) as Period[]).map((p) => <option key={p} value={p}>{PERIODS[p]}</option>)}
-          </select>
+          <PnlCalendarButton closed={state.closed} defaultPaper={shadow} />
+          <DateRangePicker value={dateRange} onChange={setDateRange} />
         </div>
       </div>
 
       {/* KPI card */}
       <section aria-label="Summary" className="mb-8 grid overflow-hidden rounded-[1.4rem] border border-line2 bg-panel sm:grid-cols-2 lg:grid-cols-[1.35fr_1fr_1fr_1fr_1fr] stat-grid">
         {loading ? Array.from({ length: 5 }).map((_, i) => <div key={i} className="px-6 py-6"><Skeleton className="h-4 w-24" /><Skeleton className="mt-4 h-9 w-36" /><Skeleton className="mt-3 h-3 w-28" /></div>) : <>
-          <Kpi first label="Total balance" sub={<><span className={tone(pnlUsd)}>{fmtUsd(pnlUsd, true)}</span><PctChip v={totalPnlPct} />{PERIODS[period].toLowerCase()}</>}>{fmtUsd(total)}</Kpi>
+          <Kpi first label="Total balance" sub={<><span className={tone(pnlUsd)}>{fmtUsd(pnlUsd, true)}</span><PctChip v={totalPnlPct} />{dateRange.label.toLowerCase()}</>}>{fmtUsd(total)}</Kpi>
           <Kpi label="Period PnL" extra={
             <span role="group" aria-label="Units" className="inline-flex rounded-lg bg-raised p-0.5">
               {(['USD', 'SOL'] as const).map((u) => <button key={u} type="button" aria-pressed={unit === u} onClick={() => setUnit(u)} className={cx('rounded-md px-2 py-0.5 text-[0.72rem] font-semibold', unit === u ? 'bg-[#2b2b31] text-fg' : 'text-muted')}>{u}</button>)}
@@ -149,7 +143,7 @@ export function OverviewView() {
             {winRate == null ? '—' : `${winRate.toFixed(1)}%`}
             <span className={cx('mt-3 block h-1.5 overflow-hidden rounded-full', winRate == null ? 'bg-line2' : 'bg-rose-400/45')}><span className="block h-full rounded-full bg-emerald-400" style={{ width: `${winRate ?? 0}%` }} /></span>
           </Kpi>
-          <Kpi label="KOLs" sub={<>{enabled} enabled · {kolFills} buys {period === 'today' ? 'today' : period === '1h' ? 'this hour' : 'filled'}</>}>{state.kols.length}</Kpi>
+          <Kpi label="KOLs" sub={<>{enabled} enabled · {kolFills} buys {dateRange.label.toLowerCase()}</>}>{state.kols.length}</Kpi>
         </>}
       </section>
 

@@ -429,6 +429,7 @@ export class SolanaLiveFeed {
       const json = (await r.json()) as { result?: { value?: ({ data?: [string, string] } | null)[] } };
       const vals = json.result?.value;
       if (!Array.isArray(vals)) return;
+      let anyChanged = false;
       for (let i = 0; i < targets.length; i++) {
         const b64 = vals[i]?.data?.[0];
         if (!b64) continue;
@@ -445,9 +446,10 @@ export class SolanaLiveFeed {
         const vTokens = Number(buf.readBigUInt64LE(8)) / 1e6;
         const vSol = Number(buf.readBigUInt64LE(16)) / 1e9;
         if (vTokens > 0 && vSol > 0) {
-          this.applyPaperPrice(targets[i].mint, vSol / vTokens, vSol);
+          if (this.applyPaperPrice(targets[i].mint, vSol / vTokens, vSol, true)) anyChanged = true;
         }
       }
+      if (anyChanged) this.cp.updatePaperState(this.listPaperPositions());
     } catch { /* ignore transient RPC timeouts */ }
   }
 
@@ -466,8 +468,13 @@ export class SolanaLiveFeed {
   }
 
   private async pollPaperPricesFromDexScreener() {
-    if (this.paper.size === 0) return;
-    const mints = [...this.paper.keys()].join(',');
+    // Only poll DexScreener for mints WITHOUT an active on-chain bondingCurveKey (prevents stale DexScreener cache from flickering against live RPC!).
+    const fallbackMints: string[] = [];
+    for (const [mint, e] of this.paper.entries()) {
+      if (!e.bondingCurveKey) fallbackMints.push(mint);
+    }
+    if (fallbackMints.length === 0) return;
+    const mints = fallbackMints.join(',');
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 3000);
@@ -485,15 +492,20 @@ export class SolanaLiveFeed {
         if (!mint || !Number.isFinite(price) || price <= 0) continue;
         if (!bestByMint.has(mint)) bestByMint.set(mint, { price, quoteLiq: pair.liquidity?.quote });
       }
+      let anyChanged = false;
       for (const [mint, info] of bestByMint) {
-        this.applyPaperPrice(mint, info.price, info.quoteLiq);
+        if (this.applyPaperPrice(mint, info.price, info.quoteLiq, true)) anyChanged = true;
       }
+      if (anyChanged) this.cp.updatePaperState(this.listPaperPositions());
     } catch { /* ignore transient DexScreener timeouts */ }
   }
 
-  private applyPaperPrice(mint: string, price: number, vSol?: number) {
+  private applyPaperPrice(mint: string, price: number, vSol?: number, batch = false): boolean {
     const entry = this.paper.get(mint);
-    if (!entry || !Number.isFinite(price) || price <= 0) return;
+    if (!entry || !Number.isFinite(price) || price <= 0) return false;
+    const prev = entry.pos.price;
+    const changed = prev <= 0 || Math.abs(price - prev) / prev > 1e-6;
+    if (!changed) return false;
     entry.pos = { ...entry.pos, price };
     if (vSol && vSol > 0) entry.vSol = vSol;
     if (price > entry.peakPrice) entry.peakPrice = price;
@@ -505,13 +517,13 @@ export class SolanaLiveFeed {
     // 1. Curve liquidity floor protection (same as live Lighthouse guard)
     if (exits.curve_floor.enabled && vSol != null && vSol > 0 && vSol < exits.curve_floor.min_real_sol_reserves_sol) {
       this.closePaperPosition(mint, 'Shadow curve floor');
-      return;
+      return false;
     }
 
     // 2. Hard stop-loss check
     if (slPct > 0 && mult <= 1 - slPct / 100) {
       this.closePaperPosition(mint, `Shadow stop-loss (-${slPct}%)`);
-      return;
+      return false;
     }
 
     // 3. Trailing stop-loss check from peak price
@@ -519,7 +531,7 @@ export class SolanaLiveFeed {
       const dropFromPeak = (entry.peakPrice - price) / entry.peakPrice;
       if (dropFromPeak >= exits.trailing_stop_pct / 100) {
         this.closePaperPosition(mint, `Shadow trailing stop (-${exits.trailing_stop_pct}%)`);
-        return;
+        return false;
       }
     }
 
@@ -531,7 +543,7 @@ export class SolanaLiveFeed {
         entry.firedSteps.add(i);
         if (step.sell_pct >= 100) {
           this.closePaperPosition(mint, `Shadow TP ${step.trigger.value}x`);
-          return;
+          return false;
         }
         const sellTokens = entry.pos.tokens * (step.sell_pct / 100);
         const proceeds = this.calcAmmSellProceeds(sellTokens, price, entry.vSol);
@@ -544,7 +556,8 @@ export class SolanaLiveFeed {
       }
     }
 
-    this.cp.updatePaperState(this.listPaperPositions());
+    if (!batch) this.cp.updatePaperState(this.listPaperPositions());
+    return true;
   }
 
   private closePaperPosition(mint: string, exitReason: string) {
