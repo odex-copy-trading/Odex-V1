@@ -164,7 +164,6 @@ export class SolanaLiveFeed {
     });
 
     ws.on('message', (raw) => {
-      if (this.cp.engineSource === 'bridge') return;
       let msg: {
         signature?: string;
         mint?: string;
