@@ -44,7 +44,8 @@ export class SolanaLiveFeed {
   private priceTimer: ReturnType<typeof setInterval> | null = null;
   private paperTimer: ReturnType<typeof setInterval> | null = null;
   private paperPriceTimer: ReturnType<typeof setInterval> | null = null;
-  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; firedSteps: Set<number> }>();
+  private curvePriceTimer: ReturnType<typeof setInterval> | null = null;
+  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; firedSteps: Set<number> }>();
   private watchedKolKeys = new Set<string>();
   private solUsd = 0;
   private solBalance = 0;
@@ -63,7 +64,11 @@ export class SolanaLiveFeed {
     this.priceTimer.unref();
     this.paperTimer = setInterval(() => this.sweepExpiredPaperPositions(), 10_000);
     this.paperTimer.unref();
-    this.paperPriceTimer = setInterval(() => void this.pollPaperPricesFromDexScreener(), 3_000);
+    // Sub-second on-chain Pump.fun bonding-curve price poller (800ms, processed commitment)
+    this.curvePriceTimer = setInterval(() => void this.pollBondingCurvesOnChain(), 800);
+    this.curvePriceTimer.unref();
+    // Fast DexScreener fallback (1.5s) for graduated PumpSwap/Raydium tokens
+    this.paperPriceTimer = setInterval(() => void this.pollPaperPricesFromDexScreener(), 1_500);
     this.paperPriceTimer.unref();
     this.cp.on('telemetry', (e: { type: string; positions?: Position[] }) => {
       if (e.type === 'config_updated') this.reload();
@@ -81,6 +86,7 @@ export class SolanaLiveFeed {
     if (this.pumpTimer) clearTimeout(this.pumpTimer);
     if (this.priceTimer) clearInterval(this.priceTimer);
     if (this.paperTimer) clearInterval(this.paperTimer);
+    if (this.curvePriceTimer) clearInterval(this.curvePriceTimer);
     if (this.paperPriceTimer) clearInterval(this.paperPriceTimer);
     this.slotWs?.close();
     this.pumpWs?.close();
@@ -186,6 +192,7 @@ export class SolanaLiveFeed {
         signature?: string;
         mint?: string;
         traderPublicKey?: string;
+        bondingCurveKey?: string;
         symbol?: string;
         name?: string;
         uri?: string;
@@ -251,7 +258,7 @@ export class SolanaLiveFeed {
         this.paper.size < 5 &&
         !this.paper.has(msg.mint)
       ) {
-        this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws);
+        this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey);
       }
       if (msg.uri) void this.hydrateTokenImage(ev, msg.uri, msg.signature ?? null);
     });
@@ -350,7 +357,7 @@ export class SolanaLiveFeed {
     return [...this.paper.values()].map((e) => e.pos);
   }
 
-  private openPaperPosition(ev: FeedEvent, desiredBuySol: number, vSol?: number, vTokens?: number, ws?: WebSocket) {
+  private openPaperPosition(ev: FeedEvent, desiredBuySol: number, vSol?: number, vTokens?: number, ws?: WebSocket, bondingCurveKey?: string) {
     const cfg = this.cp.configState().config;
     const buySol = Math.max(0.01, Math.min(100, desiredBuySol || cfg.strategy.default_buy_sol || 1));
     const buyFeeSol = this.cp.estimateExecutionFeeSol();
@@ -388,12 +395,60 @@ export class SolanaLiveFeed {
       proceedsSol: 0,
       pendingSell: null,
     };
-    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, firedSteps: new Set() });
-    console.log(`[solana-feed] Shadow AMM buy: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee, vSol=${postVSol.toFixed(1)}, effPx=${effectiveEntryPrice.toExponential(3)})`);
+    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, firedSteps: new Set() });
+    console.log(`[solana-feed] Shadow AMM buy: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee, vSol=${postVSol.toFixed(1)}, curve=${bondingCurveKey ?? 'n/a'})`);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [ev.mint] }));
     }
     this.cp.updatePaperState(this.listPaperPositions(), undefined, true);
+  }
+
+  /** Sub-second on-chain Pump.fun bonding-curve reader via batch getMultipleAccounts (commitment: processed). */
+  private async pollBondingCurvesOnChain() {
+    const targets: { mint: string; curve: string }[] = [];
+    for (const [mint, e] of this.paper.entries()) {
+      if (e.bondingCurveKey) targets.push({ mint, curve: e.bondingCurveKey });
+    }
+    if (targets.length === 0) return;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 1500);
+      const r = await fetch(this.endpoints.httpUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getMultipleAccounts',
+          params: [targets.map((x) => x.curve), { encoding: 'base64', commitment: 'processed' }],
+        }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(t);
+      if (!r.ok) return;
+      const json = (await r.json()) as { result?: { value?: ({ data?: [string, string] } | null)[] } };
+      const vals = json.result?.value;
+      if (!Array.isArray(vals)) return;
+      for (let i = 0; i < targets.length; i++) {
+        const b64 = vals[i]?.data?.[0];
+        if (!b64) continue;
+        const buf = Buffer.from(b64, 'base64');
+        if (buf.length < 49) continue;
+        // Pump.fun BondingCurve layout: disc(0..8) | virtual_token_reserves(8..16) | virtual_sol_reserves(16..24) | ... | complete(48)
+        const complete = buf[48] === 1;
+        if (complete) {
+          // Graduated off bonding curve -> let DexScreener track PumpSwap/Raydium price
+          const entry = this.paper.get(targets[i].mint);
+          if (entry) entry.bondingCurveKey = undefined;
+          continue;
+        }
+        const vTokens = Number(buf.readBigUInt64LE(8)) / 1e6;
+        const vSol = Number(buf.readBigUInt64LE(16)) / 1e9;
+        if (vTokens > 0 && vSol > 0) {
+          this.applyPaperPrice(targets[i].mint, vSol / vTokens, vSol);
+        }
+      }
+    } catch { /* ignore transient RPC timeouts */ }
   }
 
   /** Computes exact constant-product AMM sell proceeds after Pump.fun 1% fee & SWQoS execution fee. */
