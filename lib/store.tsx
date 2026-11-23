@@ -119,6 +119,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     let pingTimer: ReturnType<typeof setInterval> | undefined;
     let bannerTimer: ReturnType<typeof setTimeout> | undefined;
     let retry = 0;
+    let lastSlotUiAt = 0;
 
     if (!token) return;
     let ws: WebSocket | null = null;
@@ -152,6 +153,12 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         const e = JSON.parse(String(m.data)) as TelemetryEvent | WsServerControl;
         if (e.type === 'ready') { retry = 0; clearTimeout(bannerTimer); return; }
         if (e.type === 'error' || e.type === 'pong') return;
+        // Throttle routine slot_tick UI updates to 1/sec (trades, signals & prices remain 0ms instant)
+        if (e.type === 'slot_tick') {
+          const now = Date.now();
+          if (now - lastSlotUiAt < 1_000) return;
+          lastSlotUiAt = now;
+        }
         if (e.type === 'circuit_breaker_tripped') toast(`Circuit breaker: ${e.reason}`, 'error');
         dispatch({ type: 'event', e });
       };

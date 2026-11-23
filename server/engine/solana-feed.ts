@@ -72,6 +72,8 @@ export class SolanaLiveFeed {
   private curvePriceTimer: ReturnType<typeof setInterval> | null = null;
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
   private pumpFallbackTimer: ReturnType<typeof setInterval> | null = null;
+  private inFlightFallback = false;
+  private inFlightCurvePoll = false;
   private lastPumpMsgAt = 0;
   private lastSlotMsgAt = 0;
   private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; hasLiveTick: boolean; breakevenArmed: boolean; instantTpFired: boolean; firedSteps: Set<number> }>();
@@ -98,7 +100,7 @@ export class SolanaLiveFeed {
     this.connectPumpStream();
     this.priceTimer = setInterval(() => void this.refreshMarketAndBalance(), 30_000);
     this.priceTimer.unref();
-    this.paperTimer = setInterval(() => this.sweepExpiredPaperPositions(), 10_000);
+    this.paperTimer = setInterval(() => this.sweepExpiredPaperPositions(), 2_000);
     this.paperTimer.unref();
     // Sub-second on-chain Pump.fun bonding-curve price poller (800ms, processed commitment)
     this.curvePriceTimer = setInterval(() => void this.pollBondingCurvesOnChain(), 800);
@@ -109,8 +111,8 @@ export class SolanaLiveFeed {
     // Zombie WebSocket watchdog: auto-reconnects if PumpPortal or Solana slot WS goes silent
     this.watchdogTimer = setInterval(() => this.checkStaleStreams(), 15_000);
     this.watchdogTimer.unref();
-    // Automatic Pump.fun v3 REST fallback (3s) whenever PumpPortal WS is down (e.g., 502) or silent >12s
-    this.pumpFallbackTimer = setInterval(() => void this.pollPumpFunFallback(), 3_000);
+    // Automatic Pump.fun v3 REST fallback (1s) whenever PumpPortal WS is down (e.g., 502) or silent >12s
+    this.pumpFallbackTimer = setInterval(() => void this.pollPumpFunFallback(), 1_000);
     this.pumpFallbackTimer.unref();
     this.cp.on('telemetry', (e: { type: string; positions?: Position[] }) => {
       if (e.type === 'config_updated') this.reload();
@@ -323,9 +325,10 @@ export class SolanaLiveFeed {
 
   /** Automatic live launch fallback when PumpPortal WebSocket is down (502) or silent >12s. */
   private async pollPumpFunFallback() {
-    if (this.stopped) return;
+    if (this.stopped || this.inFlightFallback) return;
     const pumpHealthy = this.pumpWs?.readyState === WebSocket.OPEN && Date.now() - this.lastPumpMsgAt < 12_000;
     if (pumpHealthy) return;
+    this.inFlightFallback = true;
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 3000);
@@ -416,6 +419,7 @@ export class SolanaLiveFeed {
         });
       }
     } catch { /* ignore transient fallback error */ }
+    finally { this.inFlightFallback = false; }
   }
 
   private handleNewLaunch(
@@ -815,11 +819,13 @@ export class SolanaLiveFeed {
 
   /** Sub-second on-chain Pump.fun bonding-curve reader via batch getMultipleAccounts (commitment: processed). */
   private async pollBondingCurvesOnChain() {
+    if (this.inFlightCurvePoll) return;
     const targets: { mint: string; curve: string }[] = [];
     for (const [mint, e] of this.paper.entries()) {
       if (e.bondingCurveKey) targets.push({ mint, curve: e.bondingCurveKey });
     }
     if (targets.length === 0) return;
+    this.inFlightCurvePoll = true;
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 1500);
@@ -861,6 +867,7 @@ export class SolanaLiveFeed {
       }
       if (anyChanged) this.cp.updatePaperState(this.listPaperPositions());
     } catch { /* ignore transient RPC timeouts */ }
+    finally { this.inFlightCurvePoll = false; }
   }
 
   /** Watchdog: terminates and reconnects zombie/half-open WebSockets that stop delivering messages. */
