@@ -54,6 +54,8 @@ export class ControlPlane extends EventEmitter {
   private cfg: { version: number; config: BotConfig; updatedAt: number };
   private burnSamples: [number, number][] = [];
   private tripped = new Set<Breaker>();
+  private lastEngineSlotAt = 0;
+  private lastEngineBurstAt = 0;
   readonly startedAt = Date.now();
 
   constructor(private db: Db, private secrets: SecretStore, private engine: EngineAdapter, seed?: { config: BotConfig; kols: Kol[] }) {
@@ -107,10 +109,12 @@ export class ControlPlane extends EventEmitter {
     switch (e.type) {
       case 'nonces': r.nonces = e.nonces; this.publishConfig(); return;
       case 'slot_tick':
+        if (e.chain.slot > 0) this.lastEngineSlotAt = Date.now();
         r.chain = e.chain; r.balances = e.balances;
         if (e.balances.sol > this.cfg.config.wallets.max_hot_wallet_sol) this.trip('hot_wallet_ceiling', `Hot wallet holds ${e.balances.sol.toFixed(3)} SOL, above the ${this.cfg.config.wallets.max_hot_wallet_sol} SOL ceiling`);
         break;
       case 'burst_dispatched':
+        this.lastEngineBurstAt = Date.now();
         r.feed = [e.burst, ...r.feed.filter((x) => x.id !== e.burst.id)].slice(0, 300);
         this.db.insertBurst(e.burst, null);
         break;
@@ -167,13 +171,19 @@ export class ControlPlane extends EventEmitter {
     if (!this.rt) throw new HttpError(503, 'Engine not connected');
     return this.rt;
   }
-  /** Accepts real read-only mainnet telemetry (e.g. Helius WS feed) when the Rust engine is offline. */
+  /** Accepts real read-only mainnet telemetry whenever the Rust engine is offline or has no active ShredStream/Geyser feed yet. */
   ingestExternalEvent(e: TelemetryEvent, winningSig: string | null = null) {
-    if (this.rt) return; // Rust engine owns telemetry once connected
+    const now = Date.now();
     if (e.type === 'slot_tick') {
+      if (this.rt && now - this.lastEngineSlotAt < 5_000) return;
       this.liveChain = e.chain;
       this.liveBalances = e.balances;
+      if (this.rt) {
+        this.rt.chain = { ...this.rt.chain, slot: e.chain.slot, shredLatencyMs: e.chain.shredLatencyMs };
+        this.rt.balances = { ...this.rt.balances, sol: e.balances.sol, solUsd: e.balances.solUsd };
+      }
     } else if (e.type === 'burst_dispatched') {
+      if (this.rt && now - this.lastEngineBurstAt < 10_000) return;
       this.db.insertBurst(e.burst, winningSig);
     }
     this.publish(e);
