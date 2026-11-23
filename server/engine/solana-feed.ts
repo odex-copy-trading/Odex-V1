@@ -76,7 +76,7 @@ export class SolanaLiveFeed {
   private inFlightCurvePoll = false;
   private lastPumpMsgAt = 0;
   private lastSlotMsgAt = 0;
-  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; hasLiveTick: boolean; breakevenArmed: boolean; instantTpFired: boolean; firedSteps: Set<number> }>();
+  private paper = new Map<string, { pos: Position; peakPrice: number; vSol: number; bondingCurveKey?: string; creator?: string; hasLiveTick: boolean; breakevenArmed: boolean; instantTpFired: boolean; firedSteps: Set<number> }>();
   private watchedKolKeys = new Set<string>();
   private pumpSubscribedKols = new Set<string>();
   private rpcKolReqToPubkey = new Map<number, string>();
@@ -84,6 +84,8 @@ export class SolanaLiveFeed {
   private rpcKolSubIdToPubkey = new Map<number, string>();
   private nextRpcSubReqId = 100;
   private seenKolSigs = new Set<string>();
+  private creatorLaunches = new Map<string, number[]>();
+  private ruggedCreators = new Set<string>();
   private solUsd = 0;
   private solBalance = 0;
   private lastSlot = 0;
@@ -289,6 +291,22 @@ export class SolanaLiveFeed {
       // 1. Live mainnet trade update for an open Shadow paper position -> real mark-to-market PnL + full exit engine.
       if ((msg.txType === 'buy' || msg.txType === 'sell') && this.paper.has(msg.mint)) {
         this.onPaperTrade(msg.mint, msg.vSolInBondingCurve, msg.vTokensInBondingCurve);
+        // 1b. Instant exit on dev dump or mirrored KOL sell (if position is still open after tick)
+        if (msg.txType === 'sell' && msg.traderPublicKey && this.paper.has(msg.mint)) {
+          const entry = this.paper.get(msg.mint)!;
+          if (entry.creator && msg.traderPublicKey === entry.creator) {
+            this.ruggedCreators.add(entry.creator);
+            this.closePaperPosition(msg.mint, 'Dev dump instant exit');
+            return;
+          }
+          if (entry.pos.kolId) {
+            const kol = this.cp.snapshot().kols.find((k) => k.id === entry.pos.kolId && k.pubkey === msg.traderPublicKey);
+            if (kol) {
+              this.closePaperPosition(msg.mint, `Mirrored KOL sell (${kol.label})`);
+              return;
+            }
+          }
+        }
       }
 
       // 2. Live KOL Copy-Trade detection in Shadow mode (same-slot copy using KOL's exact buySizeSol & maxCurveReserveSol).
@@ -308,6 +326,7 @@ export class SolanaLiveFeed {
         vSolInBondingCurve: msg.vSolInBondingCurve,
         vTokensInBondingCurve: msg.vTokensInBondingCurve,
         bondingCurveKey: msg.bondingCurveKey,
+        creator: msg.traderPublicKey,
         pool: msg.pool,
       }, ws);
     });
@@ -345,6 +364,7 @@ export class SolanaLiveFeed {
         image_uri?: string;
         metadata_uri?: string;
         bonding_curve?: string;
+        creator?: string;
         created_timestamp?: number;
         virtual_sol_reserves?: number;
         virtual_token_reserves?: number;
@@ -413,6 +433,7 @@ export class SolanaLiveFeed {
           vSolInBondingCurve: vSol,
           vTokensInBondingCurve: vTokens,
           bondingCurveKey: c.bonding_curve,
+          creator: c.creator,
           pool: 'pump',
           fromFallback: true,
           createdAtMs: typeof c.created_timestamp === 'number' ? c.created_timestamp : undefined,
@@ -434,6 +455,7 @@ export class SolanaLiveFeed {
       vSolInBondingCurve?: number;
       vTokensInBondingCurve?: number;
       bondingCurveKey?: string;
+      creator?: string;
       pool?: string;
       fromFallback?: boolean;
       createdAtMs?: number;
@@ -485,11 +507,24 @@ export class SolanaLiveFeed {
     const normSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const lastSymBuy = normSym ? (this.recentBoughtSymbols.get(normSym) ?? 0) : 0;
     const notDuplicateClone = !normSym || ts - lastSymBuy > 900_000;
+    // Serial-rugger & multi-deployer filter: block creators who rugged before or launched >=2 tokens in 60 min
+    let creatorClean = true;
+    if (msg.creator) {
+      const prev = (this.creatorLaunches.get(msg.creator) ?? []).filter((t) => ts - t < 3_600_000);
+      prev.push(ts);
+      this.creatorLaunches.set(msg.creator, prev);
+      if (this.creatorLaunches.size > 1000) {
+        const oldest = this.creatorLaunches.keys().next().value;
+        if (oldest) this.creatorLaunches.delete(oldest);
+      }
+      if (this.ruggedCreators.has(msg.creator) || prev.length >= 2) creatorClean = false;
+    }
     if (
       this.cp.engineStatus === 'SHADOW' &&
       cfg.strategy.modes.pumpfun_create_snipe &&
       isFreshForAutoBuy &&
       notDuplicateClone &&
+      creatorClean &&
       withinCurve &&
       hasMeta &&
       sizeSol >= 0.5 &&
@@ -504,7 +539,7 @@ export class SolanaLiveFeed {
           if (oldest) this.recentBoughtSymbols.delete(oldest);
         }
       }
-      this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey);
+      this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, undefined, msg.creator);
     }
     if (!ev.image && msg.uri) void this.hydrateTokenImage(ev, msg.uri, msg.signature ?? null);
   }
@@ -666,6 +701,21 @@ export class SolanaLiveFeed {
       const wsolDelta = (preTok.get(wsolMint) ?? 0) - (postTok.get(wsolMint) ?? 0);
       if (wsolDelta > 0) solSpent += wsolDelta;
 
+      // Check if the KOL SOLD a token we currently hold (Mirror KOL Exit via Solana RPC)
+      const kolForExit = this.cp.snapshot().kols.find((k) => k.pubkey === kolPubkey);
+      if (kolForExit) {
+        for (const [mint, preAmt] of preTok.entries()) {
+          if (IGNORED_MINTS.has(mint) || preAmt <= 0) continue;
+          const postAmt = postTok.get(mint) ?? 0;
+          if (preAmt - postAmt > preAmt * 0.25) {
+            const held = this.paper.get(mint);
+            if (held && held.pos.kolId === kolForExit.id) {
+              this.closePaperPosition(mint, `Mirrored KOL sell (${kolForExit.label})`);
+            }
+          }
+        }
+      }
+
       // Find the token the KOL acquired (positive net balance delta, ignoring WSOL/USDC/USDT)
       let boughtMint: string | null = null;
       let boughtTokens = 0;
@@ -757,7 +807,7 @@ export class SolanaLiveFeed {
     return [...this.paper.values()].map((e) => e.pos);
   }
 
-  private openPaperPosition(ev: FeedEvent, desiredBuySol: number, vSol?: number, vTokens?: number, ws?: WebSocket, bondingCurveKey?: string, overrideEntryPrice?: number) {
+  private openPaperPosition(ev: FeedEvent, desiredBuySol: number, vSol?: number, vTokens?: number, ws?: WebSocket, bondingCurveKey?: string, overrideEntryPrice?: number, creator?: string) {
     const cfg = this.cp.configState().config;
     const buySol = Math.max(0.01, Math.min(100, desiredBuySol || cfg.strategy.default_buy_sol || 1));
     const buyFeeSol = this.cp.estimateExecutionFeeSol();
@@ -809,7 +859,7 @@ export class SolanaLiveFeed {
       proceedsSol: 0,
       pendingSell: null,
     };
-    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, hasLiveTick: false, breakevenArmed: false, instantTpFired: false, firedSteps: new Set() });
+    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, creator, hasLiveTick: false, breakevenArmed: false, instantTpFired: false, firedSteps: new Set() });
     console.log(`[solana-feed] Shadow AMM buy: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee, vSol=${postVSol.toFixed(1)}, curve=${bondingCurveKey ?? 'n/a'})`);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [ev.mint] }));
@@ -966,6 +1016,7 @@ export class SolanaLiveFeed {
 
     // 2. Hard stop-loss check
     if (slPct > 0 && mult <= 1 - slPct / 100) {
+      if (entry.creator) this.ruggedCreators.add(entry.creator);
       this.closePaperPosition(mint, `Shadow stop-loss (-${slPct}%)`);
       return false;
     }

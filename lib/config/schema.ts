@@ -204,7 +204,7 @@ export const DEFAULT_CONFIG: BotConfig = {
   },
   strategy: {
     modes: { kol_backrun: true, pumpfun_create_snipe: false, generic_quote_snipe: false },
-    default_buy_sol: 2, min_buy_sol: 0.1, max_buy_sol: 8,
+    default_buy_sol: 0.5, min_buy_sol: 0.1, max_buy_sol: 8,
     max_curve_reserve_sol: 60, slippage_bps: 800, default_kol_margin_sol: 0.02,
     buy_slot_ttl: { min: 0, max: 4 },
     generic_quote_mints: [],
@@ -231,7 +231,7 @@ export const DEFAULT_CONFIG: BotConfig = {
       { sell_pct: 33, trigger: { kind: 'pnl_multiple', value: 3 } },
       { sell_pct: 100, trigger: { kind: 'time_secs', value: 1_800 } },
     ],
-    stop_loss_pct: 55,
+    stop_loss_pct: 30,
     trailing_stop_pct: null,
     curve_floor: { enabled: true, min_real_sol_reserves_sol: 5 },
     sell_slot_ttl: { min: 7, max: 9 },

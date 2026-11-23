@@ -261,21 +261,28 @@ impl TxBuilder {
             data: 4u32.to_le_bytes().to_vec(),
         });
 
+        let direct_native_dex = std::env::var("WHAL_DIRECT_NATIVE_DEX")
+            .ok()
+            .map(|v| matches!(v.trim(), "1" | "true" | "TRUE"))
+            .unwrap_or(false);
+
         // ix 1: Program #1 (whal-dedupe CheckAndLock: [0x01 | opportunity_key(32) | max_slot(8)])
-        let max_slot = trigger.trigger_slot.saturating_add(p.buy_slot_ttl);
-        let mut dedupe_data = Vec::with_capacity(41);
-        dedupe_data.push(0x01);
-        dedupe_data.extend_from_slice(&trigger.opportunity_key);
-        dedupe_data.extend_from_slice(&max_slot.to_le_bytes());
-        ixs.push(InstructionSpec {
-            label: "dedupe_check_and_lock",
-            program_id: self.programs.dedupe_program,
-            accounts: vec![
-                AccountMetaSpec { pubkey: self.programs.dedupe_state_account, is_signer: false, is_writable: true },
-                AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: false },
-            ],
-            data: dedupe_data,
-        });
+        if !direct_native_dex {
+            let max_slot = trigger.trigger_slot.saturating_add(p.buy_slot_ttl);
+            let mut dedupe_data = Vec::with_capacity(41);
+            dedupe_data.push(0x01);
+            dedupe_data.extend_from_slice(&trigger.opportunity_key);
+            dedupe_data.extend_from_slice(&max_slot.to_le_bytes());
+            ixs.push(InstructionSpec {
+                label: "dedupe_check_and_lock",
+                program_id: self.programs.dedupe_program,
+                accounts: vec![
+                    AccountMetaSpec { pubkey: self.programs.dedupe_state_account, is_signer: false, is_writable: true },
+                    AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: false },
+                ],
+                data: dedupe_data,
+            });
+        }
 
         // ix 2: ComputeBudget (only for v0 fallback; v1 uses native transactionConfig)
         if p.version == TxVersion::V0 {
@@ -471,6 +478,40 @@ impl TxBuilder {
                 program_id: self.programs.pumpswap_program,
                 accounts: ps_accounts,
                 data: ps_data,
+            });
+        } else if direct_native_dex {
+            // Direct native DEX buy (no custom Pinocchio guard programs required — ideal for small live SOL tests)
+            let target_prog = match trigger.venue {
+                Venue::PumpFun => self.programs.pumpfun_program,
+                Venue::PumpSwap => self.programs.pumpswap_program,
+                Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => self.programs.launchlab_program,
+            };
+            let mut buy_data = Vec::with_capacity(24);
+            buy_data.extend_from_slice(&[0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]);
+            buy_data.extend_from_slice(&p.min_tokens_out.max(1).to_le_bytes());
+            buy_data.extend_from_slice(&buy_size.to_le_bytes());
+            let cpi_accs = build_venue_cpi_accounts(
+                trigger.venue,
+                &trigger.dex_accounts,
+                p.hot_wallet,
+                ephemeral_ata,
+                None,
+                token_program,
+            );
+            let native_accs = if cpi_accs.is_empty() {
+                vec![
+                    AccountMetaSpec { pubkey: trigger.pool_pda, is_signer: false, is_writable: true },
+                    AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: true },
+                    AccountMetaSpec { pubkey: ephemeral_ata, is_signer: false, is_writable: true },
+                ]
+            } else {
+                cpi_accs
+            };
+            ixs.push(InstructionSpec {
+                label: "direct_native_dex_buy",
+                program_id: target_prog,
+                accounts: native_accs,
+                data: buy_data,
             });
         } else {
             // Program #2 Mode B: Multi-KOL Guard + Venue CPI Buy Router

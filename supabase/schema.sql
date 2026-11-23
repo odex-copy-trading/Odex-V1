@@ -77,6 +77,11 @@ create table if not exists public.audit_log (
   detail jsonb not null default '{}'::jsonb
 );
 
+create table if not exists public.meta (
+  key text primary key,
+  value text not null
+);
+
 -- Enable Row Level Security (service-role / backend manages writes)
 alter table public.config_versions enable row level security;
 alter table public.kols enable row level security;
@@ -84,3 +89,4 @@ alter table public.bursts enable row level security;
 alter table public.closed_positions enable row level security;
 alter table public.sweeps enable row level security;
 alter table public.audit_log enable row level security;
+alter table public.meta enable row level security;

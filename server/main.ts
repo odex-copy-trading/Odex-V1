@@ -1,6 +1,7 @@
 // Control plane entry point.  npm run server            (needs the env vars in server/README.md)
 //                             npm run server:keys       (generate secrets + operator token)
 import { createApp } from './app';
+import { CloudSync } from './cloud-sync';
 import { ControlPlane } from './control';
 import { Db } from './db';
 import { loadEnv } from './env';
@@ -13,6 +14,8 @@ import type { EngineAdapter } from './engine/types';
 async function main() {
   const env = loadEnv();
   const db = new Db(env.dbPath);
+  const cloud = new CloudSync();
+  await cloud.restoreIfEmpty(db);
   const secrets = new SecretStore(env.secretsPath, env.masterKey);
 
   let engine: EngineAdapter;
@@ -26,7 +29,7 @@ async function main() {
     engine = sim;
   }
 
-  const cp = new ControlPlane(db, secrets, engine, seed);
+  const cp = new ControlPlane(db, secrets, engine, seed, cloud);
   engine.onEvent((e) => { if (e.type === 'connected') cp.syncEngine().catch((err) => console.error('[engine] sync failed', err)); });
   engine.start();
   if (env.engineMode === 'simulated') await cp.syncEngine();

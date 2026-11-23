@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG, diffConfig, validateConfig, type BotConfig, type FieldE
 import { isPubkey } from '../lib/pubkey';
 import { SELL_PCTS, type EngineSource, type SellPct, type StateSnapshot, type TelemetryEvent } from '../lib/telemetry';
 import type { ClosedPosition, ConfigState, Kol, NonceHealth, Position } from '../lib/types';
+import type { CloudSync } from './cloud-sync';
 import type { Db } from './db';
 import { HttpError } from './http';
 import type { SecretStore } from './secrets';
@@ -58,7 +59,7 @@ export class ControlPlane extends EventEmitter {
   private lastEngineBurstAt = 0;
   readonly startedAt = Date.now();
 
-  constructor(private db: Db, private secrets: SecretStore, private engine: EngineAdapter, seed?: { config: BotConfig; kols: Kol[] }) {
+  constructor(private db: Db, private secrets: SecretStore, private engine: EngineAdapter, seed?: { config: BotConfig; kols: Kol[] }, private cloud?: CloudSync) {
     super();
     this.setMaxListeners(0);
     let latest = db.latestConfig();
@@ -100,6 +101,7 @@ export class ControlPlane extends EventEmitter {
     if (closed) {
       this.rt.closed = [closed, ...this.rt.closed.filter((c) => c.id !== closed.id)].slice(0, 2000);
       this.db.insertClosed(closed);
+      this.cloud?.syncClosed(closed);
       const net = closed.proceedsSol - closed.entrySol;
       this.rt.session = { ...this.rt.session, realizedSol: +(this.rt.session.realizedSol + net).toFixed(6) };
     }
@@ -287,6 +289,7 @@ export class ControlPlane extends EventEmitter {
       this.db.audit({ ...a, action: 'config.update', target: `v${version}`, detail: { baseVersion, changes } });
     });
     this.cfg = { version, config: v.config, updatedAt: Date.now() };
+    this.cloud?.syncConfig(version, v.config, a.actor);
     this.publishConfig();
     return { version, appliedLive: changes.filter((c) => !c.restart).map((c) => c.path), pendingRestart: this.db.pendingRestart() };
   }
@@ -306,6 +309,7 @@ export class ControlPlane extends EventEmitter {
     if (this.db.listKols().some((k) => k.pubkey === input.pubkey)) throw new HttpError(409, 'That wallet is already on the watchlist');
     const kol: Kol = { id: `kol_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, ...input, stats: { wins: 0, losses: 0, realizedSol: 0, lastSeenSlot: null } };
     this.db.upsertKol(kol);
+    this.cloud?.syncKol(kol);
     this.db.audit({ ...a, action: 'kol.create', target: kol.id, detail: input });
     await this.engine.command({ type: 'kol.upsert', kol }).catch((e) => console.warn('[control] engine kol sync:', e.message));
     this.publish({ type: 'kols_updated', ts: Date.now(), kols: this.db.listKols() });
@@ -317,6 +321,7 @@ export class ControlPlane extends EventEmitter {
     if (patch.pubkey && this.db.listKols().some((k) => k.pubkey === patch.pubkey && k.id !== id)) throw new HttpError(409, 'That wallet is already on the watchlist');
     const next: Kol = { ...cur, ...patch };
     this.db.upsertKol(next);
+    this.cloud?.syncKol(next);
     this.db.audit({ ...a, action: 'kol.update', target: id, detail: patch });
     await this.engine.command({ type: 'kol.upsert', kol: next }).catch((e) => console.warn('[control] engine kol sync:', e.message));
     this.publish({ type: 'kols_updated', ts: Date.now(), kols: this.db.listKols() });
@@ -324,6 +329,7 @@ export class ControlPlane extends EventEmitter {
   }
   async deleteKol(id: string, a: Actor) {
     if (!this.db.deleteKol(id)) throw new HttpError(404, 'Unknown KOL');
+    this.cloud?.deleteKol(id);
     this.db.audit({ ...a, action: 'kol.delete', target: id, detail: null });
     await this.engine.command({ type: 'kol.remove', id }).catch((e) => console.warn('[control] engine kol sync:', e.message));
     this.publish({ type: 'kols_updated', ts: Date.now(), kols: this.db.listKols() });
@@ -346,6 +352,7 @@ export class ControlPlane extends EventEmitter {
     }
     await this.engine.command({ type: 'control', status });
     this.db.setMeta('engine_mode', status);
+    this.cloud?.syncMeta('engine_mode', status);
     this.db.audit({ ...a, action: `engine.${input.action}`, target: null, detail: { from: st, to: status, reason: input.reason ?? null } });
     return { status };
   }
