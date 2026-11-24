@@ -225,10 +225,11 @@ impl ExecutorService {
                 );
                 // Fhbh1D same-slot 25% opening TP1 via Program #4 percentage sell router
                 if let Some(order) = tp_order {
+                    let progs = self.fanout.programs();
                     let target_dex = match trigger.venue {
-                        Venue::PumpFun => self.builder.programs.pumpfun_program,
-                        Venue::PumpSwap => self.builder.programs.pumpswap_program,
-                        Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => self.builder.programs.launchlab_program,
+                        Venue::PumpFun => progs.pumpfun_program,
+                        Venue::PumpSwap => progs.pumpswap_program,
+                        Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => progs.launchlab_program,
                     };
                     let cpi_accounts = builder::build_venue_cpi_accounts(
                         trigger.venue,
@@ -239,7 +240,7 @@ impl ExecutorService {
                         token_program,
                     );
                     let sell_params = crate::exits::SellTxParams {
-                        sell_router_program: self.builder.programs.sell_router_program,
+                        sell_router_program: progs.sell_router_program,
                         target_dex_program: target_dex,
                         venue: trigger.venue,
                         hot_wallet: cfg.hot_wallet,
