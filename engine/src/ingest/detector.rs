@@ -345,6 +345,11 @@ impl SignalDetector {
         {
             return false;
         }
+        if !filter.allowed_creators.is_empty()
+            && !filter.allowed_creators.contains(&launch.creator)
+        {
+            return false;
+        }
         if filter.require_metadata_uri && launch.uri.trim().is_empty() {
             return false;
         }

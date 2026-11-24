@@ -777,6 +777,13 @@ export class SolanaLiveFeed {
     if (!kol) return;
     if (msg.vSolInBondingCurve && msg.vSolInBondingCurve > kol.maxCurveReserveSol) return;
 
+    // Filter 4 (Fhbh1D strict slot-freshness TTL): reject stale KOL signals older than buy_slot_ttl.max (default 4 slots / ~1.6s)
+    const maxSlotTtl = Math.max(1, cfg.strategy.buy_slot_ttl?.max || 4);
+    if (msg.slotOverride && this.lastSlot > 0 && this.lastSlot - msg.slotOverride > maxSlotTtl) {
+      console.log(`[solana-feed] Skipped stale KOL signal from ${kol.label}: slot delta ${this.lastSlot - msg.slotOverride} > ${maxSlotTtl}`);
+      return;
+    }
+
     const ts = Date.now();
     const slot = msg.slotOverride ?? this.lastSlot;
     const symbol = (msg.symbol || msg.mint.slice(0, 4)).trim().slice(0, 16);
