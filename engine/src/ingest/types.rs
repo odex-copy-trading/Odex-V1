@@ -80,9 +80,6 @@ pub struct LaunchFilterConfig {
     pub max_dev_buy_lamports: u64,
     /// Empty means any quote mint is allowed; otherwise the launch quote mint must be listed.
     pub allowed_quote_mints: Vec<PubkeyBytes>,
-    /// Filter 6 (Fhbh1D deployer whitelist): if non-empty, only 0-block launches from these deployer wallets pass.
-    #[serde(default)]
-    pub allowed_creators: Vec<PubkeyBytes>,
     /// Optional case-insensitive symbol/name substring denylist (e.g. spam filters).
     pub blocked_keywords: Vec<String>,
     /// Require non-empty metadata URI.
@@ -96,7 +93,6 @@ impl Default for LaunchFilterConfig {
             min_dev_buy_lamports: 100_000_000,      // 0.1 SOL
             max_dev_buy_lamports: 50_000_000_000,   // 50 SOL
             allowed_quote_mints: Vec::new(),
-            allowed_creators: Vec::new(),
             blocked_keywords: Vec::new(),
             require_metadata_uri: false,
         }
