@@ -433,7 +433,7 @@ export function PnlCalendarButton({
                   <button
                     type="button"
                     onClick={() => setMode('paper')}
-                    className={cx('rounded-full px-3 py-1 transition-colors', mode === 'paper' ? 'bg-sky-500/20 text-sky-300 ring-1 ring-sky-400/40' : 'text-muted hover:text-fg')}
+                    className={cx('rounded-full px-3 py-1 transition-colors', mode === 'paper' ? 'bg-white/15 text-white ring-1 ring-white/45' : 'text-muted hover:text-fg')}
                   >
                     Paper
                   </button>
