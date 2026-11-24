@@ -123,7 +123,7 @@ export class ControlPlane extends EventEmitter {
       this.rt.session = { ...this.rt.session, fills: this.rt.session.fills + 1, bursts: this.rt.session.bursts + 1 };
     }
     if (closed) {
-      this.rt.closed = [closed, ...this.rt.closed.filter((c) => c.id !== closed.id)].slice(0, 2000);
+      this.rt.closed = [closed, ...this.rt.closed.filter((c) => c.id !== closed.id)].slice(0, 5000);
       this.db.insertClosed(closed);
       this.cloud?.syncClosed(closed);
       const net = closed.proceedsSol - closed.entrySol;
@@ -187,7 +187,7 @@ export class ControlPlane extends EventEmitter {
         break;
       case 'position_updated':
         r.positions = e.positions;
-        if (e.closed) { r.closed = [e.closed, ...r.closed].slice(0, 300); this.db.insertClosed(e.closed); }
+        if (e.closed) { r.closed = [e.closed, ...r.closed].slice(0, 5000); this.db.insertClosed(e.closed); }
         break;
       case 'sweep_executed': this.db.upsertSweep(e.sweep); break;
       case 'treasury_updated':
@@ -302,7 +302,7 @@ export class ControlPlane extends EventEmitter {
     const feed = this.db.listBursts({ limit: 200, kinds: ['kol_buy', 'launch', 'sell'] }).items.map(({ winningSig: _w, ...f }) => f);
     return {
       source: 'live', engineSource: this.engineSource, engine: r.engine, chain: r.chain, balances: r.balances, feed, positions: r.positions,
-      closed: this.db.listClosed(2000), kols: this.db.listKols(), landers: this.landersSnapshot(r), sweeps: this.db.listSweeps(60), inventory: r.inventory,
+      closed: this.db.listClosed(5000), kols: this.db.listKols(), landers: this.landersSnapshot(r), sweeps: this.db.listSweeps(60), inventory: r.inventory,
       rent: r.rent, session: r.session, config: this.configState(),
     };
   }
@@ -426,7 +426,7 @@ export class ControlPlane extends EventEmitter {
           solUsd: r.balances.solUsd || this.liveBalances.solUsd || 0,
           exitReason: 'Manual paper sell (100%)',
         };
-        r.closed = [closed, ...r.closed].slice(0, 2000);
+        r.closed = [closed, ...r.closed].slice(0, 5000);
         this.db.insertClosed(closed);
         this.cloud?.syncClosed(closed);
         const net = closed.proceedsSol - closed.entrySol;

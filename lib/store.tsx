@@ -39,7 +39,7 @@ function reducer(s: TerminalState, a: Action): TerminalState {
   switch (e.type) {
     case 'slot_tick': return { ...t, chain: e.chain, balances: e.balances };
     case 'burst_dispatched': return { ...t, feed: upsert(s.feed, e.burst) };
-    case 'position_updated': return { ...t, positions: e.positions, closed: e.closed ? upsert(s.closed, e.closed) : s.closed };
+    case 'position_updated': return { ...t, positions: e.positions, closed: e.closed ? upsert(s.closed, e.closed, 5000) : s.closed };
     case 'sweep_executed': return { ...t, sweeps: upsert(s.sweeps, e.sweep, 200) };
     case 'treasury_updated': return { ...t, sweeps: e.sweeps, inventory: e.inventory, rent: e.rent };
     case 'engine_status': return { ...t, engine: { status: e.status, changedAt: e.ts, reason: e.reason }, engineSource: e.source };
