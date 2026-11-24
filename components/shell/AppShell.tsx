@@ -11,7 +11,7 @@ import { TerminalProvider, useTerminal } from '@/lib/store';
 import { LoginScreen } from '@/components/shell/LoginScreen';
 
 const NAV: { href: string; label: string; short: string; icon: LucideIcon }[] = [
-  { href: '/', label: 'Overview / Live feed', short: 'Home', icon: House },
+  { href: '/', label: 'Overview', short: 'Home', icon: House },
   { href: '/watchlist', label: 'KOL watchlist', short: 'KOLs', icon: Users },
   { href: '/execution', label: 'Execution & landers', short: 'Landers', icon: Zap },
   { href: '/treasury', label: 'Treasury & inventory', short: 'Treasury', icon: Coins },

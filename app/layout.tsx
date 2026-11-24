@@ -9,7 +9,7 @@ const geist = Geist({ subsets: ['latin'], variable: '--font-geist', display: 'sw
 export const metadata: Metadata = {
   title: { default: 'Whal Bot · Terminal', template: '%s · Whal Bot' },
   description: 'Operator terminal for the Whal Bot engine (mock data).',
-  icons: { icon: '/logo.png' },
+  icons: { icon: '/Fav.png', shortcut: '/Fav.png', apple: '/Fav.png' },
   robots: { index: false, follow: false },
 };
 

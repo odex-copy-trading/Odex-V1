@@ -393,7 +393,7 @@ function Notifications() {
 }
 
 const QUICK_LINKS: { href: string; label: string; keywords: string }[] = [
-  { href: '/', label: 'Overview / Live feed', keywords: 'home overview positions closed signals pnl' },
+  { href: '/', label: 'Overview', keywords: 'home overview positions closed signals pnl' },
   { href: '/watchlist', label: 'KOL watchlist', keywords: 'kol wallets watchlist copy' },
   { href: '/execution', label: 'Execution & landers', keywords: 'execution landers swqos jito nozomi astralane tpu' },
   { href: '/treasury', label: 'Treasury & inventory', keywords: 'treasury sweep usdc wsol rent inventory' },
