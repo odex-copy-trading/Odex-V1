@@ -1,11 +1,11 @@
 // Control-plane domain logic: owns config versions, KOL rules, history and audit; relays to the engine.
 import { EventEmitter } from 'node:events';
 import { z } from 'zod';
-import { DEFAULT_CONFIG, diffConfig, validateConfig, type BotConfig, type FieldErrors } from '../lib/config/schema';
+import { DEFAULT_CONFIG, LANDER_LABEL, diffConfig, validateConfig, type BotConfig, type FieldErrors } from '../lib/config/schema';
 import { DEFAULT_KOLS } from '../lib/config/seed-kols';
 import { isPubkey } from '../lib/pubkey';
 import { SELL_PCTS, type EngineSource, type SellPct, type StateSnapshot, type TelemetryEvent } from '../lib/telemetry';
-import type { ClosedPosition, ConfigState, Kol, NonceHealth, Position } from '../lib/types';
+import type { ClosedPosition, ConfigState, Kol, LanderId, LanderStat, NonceHealth, Position } from '../lib/types';
 import type { CloudSync } from './cloud-sync';
 import type { Db } from './db';
 import { HttpError } from './http';
@@ -244,7 +244,13 @@ export class ControlPlane extends EventEmitter {
       this.liveBalances = e.balances;
       if (this.rt) {
         this.rt.chain = { ...this.rt.chain, slot: e.chain.slot, shredLatencyMs: e.chain.shredLatencyMs };
-        this.rt.balances = { ...this.rt.balances, sol: e.balances.sol, solUsd: e.balances.solUsd };
+        this.rt.balances = {
+          ...this.rt.balances,
+          sol: e.balances.sol,
+          wsol: e.balances.wsol,
+          usdc: e.balances.usdc,
+          solUsd: e.balances.solUsd,
+        };
       }
     } else if (e.type === 'burst_dispatched') {
       if (this.rt && now - this.lastEngineBurstAt < 10_000) return;
@@ -283,12 +289,20 @@ export class ControlPlane extends EventEmitter {
     return { balances: r.balances, inventory: r.inventory, rent: r.rent, sweeps: this.db.listSweeps(200) };
   }
   nonces() { return { pool: this.rt?.nonces ?? [], target: this.cfg.config.wallets.nonce_target_pool_size, accounts: this.cfg.config.wallets.nonce_accounts }; }
+  private landersSnapshot(r: EngineRuntime): LanderStat[] {
+    const byId = new Map(r.landers.map((l) => [l.id, l]));
+    return (Object.entries(this.cfg.config.landers.providers) as [LanderId, { enabled: boolean }][]).map(([id, p]) => {
+      const live = byId.get(id);
+      if (live) return { ...live, enabled: p.enabled };
+      return { id, name: LANDER_LABEL[id], enabled: p.enabled, sent: 0, wins: 0, slotDeltaSum: 0, tipPaidSol: 0, revertCostSol: 0 };
+    });
+  }
   snapshot(): StateSnapshot {
     const r = this.rt ?? this.emptyRuntime();
     const feed = this.db.listBursts({ limit: 200, kinds: ['kol_buy', 'launch', 'sell'] }).items.map(({ winningSig: _w, ...f }) => f);
     return {
       source: 'live', engineSource: this.engineSource, engine: r.engine, chain: r.chain, balances: r.balances, feed, positions: r.positions,
-      closed: this.db.listClosed(2000), kols: this.db.listKols(), landers: r.landers, sweeps: this.db.listSweeps(60), inventory: r.inventory,
+      closed: this.db.listClosed(2000), kols: this.db.listKols(), landers: this.landersSnapshot(r), sweeps: this.db.listSweeps(60), inventory: r.inventory,
       rent: r.rent, session: r.session, config: this.configState(),
     };
   }

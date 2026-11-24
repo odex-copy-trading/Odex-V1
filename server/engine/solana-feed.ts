@@ -88,6 +88,8 @@ export class SolanaLiveFeed {
   private ruggedCreators = new Set<string>();
   private solUsd = 0;
   private solBalance = 0;
+  private wsolBalance = 0;
+  private usdcBalance = 0;
   private lastSlot = 0;
   private lastSlotAt = 0;
   private seenMints = new Set<string>();
@@ -244,8 +246,8 @@ export class SolanaLiveFeed {
       },
       balances: {
         sol: this.solBalance,
-        wsol: 0,
-        usdc: 0,
+        wsol: this.wsolBalance,
+        usdc: this.usdcBalance,
         solUsd: this.solUsd,
       },
     });
@@ -1191,8 +1193,32 @@ export class SolanaLiveFeed {
 
     const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
     if (hotWallet) {
+      const rpcUrl = this.usePublicSlotFallback ? PUBLIC_SOLANA_HTTP : this.endpoints.httpUrl;
+      const sumSplMint = async (mint: string): Promise<number | null> => {
+        try {
+          const r = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'getTokenAccountsByOwner',
+              params: [hotWallet, { mint }, { encoding: 'jsonParsed', commitment: 'confirmed' }],
+            }),
+          });
+          if (!r.ok) return null;
+          const j = await r.json() as {
+            result?: { value?: Array<{ account?: { data?: { parsed?: { info?: { tokenAmount?: { uiAmount?: number | null } } } } } }> };
+          };
+          const list = j.result?.value;
+          if (!Array.isArray(list)) return null;
+          return list.reduce((a, x) => a + (x.account?.data?.parsed?.info?.tokenAmount?.uiAmount ?? 0), 0);
+        } catch {
+          return null;
+        }
+      };
       try {
-        const r = await fetch(this.endpoints.httpUrl, {
+        const r = await fetch(rpcUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [hotWallet] }),
@@ -1200,6 +1226,12 @@ export class SolanaLiveFeed {
         const j = await r.json() as { result?: { value?: number } };
         if (typeof j.result?.value === 'number') this.solBalance = j.result.value / 1e9;
       } catch { /* ignore */ }
+      const [wsol, usdc] = await Promise.all([
+        sumSplMint('So11111111111111111111111111111111111111112'),
+        sumSplMint('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'),
+      ]);
+      if (wsol !== null) this.wsolBalance = +wsol.toFixed(6);
+      if (usdc !== null) this.usdcBalance = +usdc.toFixed(2);
     }
   }
 }
