@@ -556,16 +556,19 @@ export function PnlCalendarButton({
                         </span>
                       ) : null}
                     </div>
-                    <div className={cx(
-                      'my-auto text-center text-[1.1rem] font-medium tracking-tight tabular-nums',
-                      isBest
-                        ? 'font-semibold text-amber-300'
-                        : val > 0
-                          ? 'text-[#38f29c]'
-                          : val < 0
-                            ? 'text-[#ff5c72]'
-                            : 'text-zinc-600/80',
-                    )}>
+                    <div
+                      style={{ fontFamily: 'var(--font-geist), sans-serif', fontSize: '14.85px', fontWeight: 400, fontStyle: 'normal' }}
+                      className={cx(
+                        'my-auto text-center tracking-tight tabular-nums',
+                        isBest
+                          ? 'text-amber-300'
+                          : val > 0
+                            ? 'text-[#38f29c]'
+                            : val < 0
+                              ? 'text-[#ff5c72]'
+                              : 'text-zinc-600/80',
+                      )}
+                    >
                       {info ? fmtVal(val, true) : fmtVal(0)}
                     </div>
                   </div>
