@@ -48,7 +48,7 @@ export function usePaperBalance(): [number, (next: number) => void] {
 export function computePaperEquitySol(state: TerminalState, startingSol: number): number {
   const paperOpen = state.positions.filter((p) => p.id.startsWith('paper_'));
   const openCost = paperOpen.reduce((a, p) => a + p.entrySol, 0);
-  const openVal = paperOpen.reduce((a, p) => a + p.tokens * p.price, 0);
+  const openVal = paperOpen.reduce((a, p) => a + p.tokens * p.price + (p.proceedsSol ?? 0), 0);
   const paperClosed = state.closed.filter((c) => c.id.startsWith('cl_paper_'));
   const realizedSol = paperClosed.reduce((a, c) => a + (c.proceedsSol - c.entrySol), 0);
   return Math.max(0, startingSol - openCost + openVal + realizedSol);

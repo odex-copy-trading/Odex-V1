@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Copy, Pencil, Plus, Search, Trash2, Users } from '@/components/icons';
+import Link from 'next/link';
+import { ArrowUpRight, Copy, Pencil, Plus, Search, Settings, Trash2, Users } from '@/components/icons';
 import { Badge, Button, Card, CardHeader, EmptyState, Field, Input, Modal, PageHeader, Select, TableSkeleton, Td, Th, Toggle, cx } from '@/components/ui';
 import { useCommand, useTerminal } from '@/lib/store';
 import { fmtSlot, fmtSol, shortKey, tone } from '@/lib/format';
@@ -96,7 +97,11 @@ export function WatchlistView() {
       const h = window.location.hash;
       const frag = decodeURIComponent(h.slice(h.lastIndexOf('#') + 1));
       if (frag.startsWith('add=')) setEdit({ ...blank, pubkey: frag.slice(4) });
-      else if (frag.startsWith('kol_')) { setFocusId(frag); setTimeout(() => setFocusId(null), 2500); }
+      else if (frag.startsWith('kol_')) {
+        setFocusId(frag);
+        requestAnimationFrame(() => document.getElementById(frag)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+        setTimeout(() => setFocusId(null), 2500);
+      }
     };
     read();
     window.addEventListener('hashchange', read);
@@ -113,7 +118,14 @@ export function WatchlistView() {
   return (
     <>
       <PageHeader title="KOL watchlist" sub={loading ? 'Loading…' : `${state.kols.length} wallets · ${state.kols.filter((k) => k.enabled).length} enabled`}
-        actions={<Button variant="primary" icon={Plus} onClick={() => setEdit(null)} disabled={loading}>Track wallet</Button>} />
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href="/settings#strategy" className="inline-flex h-9 items-center gap-1.5 rounded-[0.65rem] border border-line bg-card px-3 text-xs font-medium text-fg2 hover:bg-raised hover:text-fg">
+              <Settings className="size-3.5" aria-hidden />Buy guards
+            </Link>
+            <Button variant="primary" icon={Plus} onClick={() => setEdit(null)} disabled={loading}>Track wallet</Button>
+          </div>
+        } />
       <Card>
         <CardHeader title="Tracked wallets" meta={<span>Win rate and PnL are from this bot’s own fills on each wallet.</span>}
           actions={<div className="relative w-64 max-w-full"><Search className="pointer-events-none absolute left-2.5 top-2.5 size-3.5 text-muted" aria-hidden /><Input aria-label="Search wallets" placeholder="Search label or address" className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} /></div>} />
@@ -130,10 +142,10 @@ export function WatchlistView() {
                   const n = k.stats.wins + k.stats.losses;
                   const wr = n ? (k.stats.wins / n) * 100 : null;
                   return (
-                    <tr key={k.id} className={cx('hover:bg-card', !k.enabled && 'opacity-60', focusId === k.id && 'flash-in bg-accent/10')}>
+                    <tr key={k.id} id={k.id} className={cx('hover:bg-card', !k.enabled && 'opacity-60', focusId === k.id && 'flash-in bg-accent/10')}>
                       <Td><Toggle checked={k.enabled} label={`${k.enabled ? 'Disable' : 'Enable'} ${k.label}`} onChange={(v) => run({ type: 'kol.toggle', id: k.id, enabled: v }, `${k.label} ${v ? 'enabled' : 'disabled'}`)} /></Td>
                       <Td>
-                        <div className="font-semibold">{k.label}</div>
+                        <div className="font-semibold"><Link href={`/?tab=closed&kol=${encodeURIComponent(k.id)}`} className="hover:text-accent hover:underline">{k.label}</Link></div>
                         <div className="flex items-center gap-1 text-[0.72rem] text-muted">
                           <span className="num" title={k.pubkey}>{shortKey(k.pubkey, 5)}</span>
                           <button type="button" onClick={() => copy(k.pubkey)} aria-label={`Copy ${k.label} address`} className="rounded p-0.5 hover:text-fg"><Copy className="size-3" /></button>
@@ -143,11 +155,18 @@ export function WatchlistView() {
                       <Td right mono>{k.quote === 'BONK' ? k.triggerMargin.toLocaleString('en-US') : k.triggerMargin} <span className="text-muted">{k.quote}</span></Td>
                       <Td right mono>{k.buySizeSol.toFixed(2)} <span className="text-muted">SOL</span></Td>
                       <Td right mono>{k.maxCurveReserveSol} <span className="text-muted">SOL</span></Td>
-                      <Td right mono>{wr == null ? '—' : `${wr.toFixed(0)}%`} <span className="text-[0.72rem] text-muted">({k.stats.wins}/{n})</span></Td>
+                      <Td right mono>
+                        <Link href={`/?tab=closed&kol=${encodeURIComponent(k.id)}`} className="hover:text-accent hover:underline" title={`View ${k.label} trades on Overview`}>
+                          {wr == null ? '—' : `${wr.toFixed(0)}%`} <span className="text-[0.72rem] text-muted">({k.stats.wins}/{n})</span>
+                        </Link>
+                      </Td>
                       <Td right mono className={tone(k.stats.realizedSol)}>{fmtSol(k.stats.realizedSol, 3, true)}</Td>
                       <Td right mono className="text-fg2">{k.stats.lastSeenSlot ? `#${fmtSlot(k.stats.lastSeenSlot)}` : '—'}</Td>
                       <Td right>
                         <div className="flex justify-end gap-1">
+                          <Link href={`/?tab=closed&kol=${encodeURIComponent(k.id)}`} aria-label={`View ${k.label} trades`} title="View trades" className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-fg2 hover:bg-raised hover:text-fg">
+                            <ArrowUpRight className="size-3.5" />
+                          </Link>
                           <Button size="sm" variant="ghost" icon={Pencil} aria-label={`Edit ${k.label}`} onClick={() => setEdit(toDraft(k))} />
                           <Button size="sm" variant="ghost" icon={Trash2} aria-label={`Remove ${k.label}`} onClick={() => setRemove(k)} className="hover:text-rose-300" />
                         </div>

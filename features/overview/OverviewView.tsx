@@ -1,10 +1,11 @@
 'use client';
 
-import { useMemo, useState, type ReactNode } from 'react';
-import { Snowflake, Upload } from '@/components/icons';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import Link from 'next/link';
+import { Snowflake, Upload, X } from '@/components/icons';
 import { Badge, Skeleton, cx } from '@/components/ui';
 import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
-import { portfolioUsd, useCommand, useTerminal } from '@/lib/store';
+import { kolLabel, portfolioUsd, useCommand, useTerminal } from '@/lib/store';
 import { fmtSol, fmtUsd, tone } from '@/lib/format';
 import type { FeedEvent } from '@/lib/types';
 import { DateRangePicker, PnlCalendarButton, rangeForPreset, type DateRangeValue } from './DateAndPnlCalendar';
@@ -16,10 +17,13 @@ type Source = 'all' | 'kol' | 'launch';
 
 const Sep = () => <span aria-hidden className="h-4 w-px bg-line2" />;
 
-function Kpi({ label, extra, children, sub, first }: { label: string; extra?: ReactNode; children: ReactNode; sub: ReactNode; first?: boolean }) {
+function Kpi({ label, href, extra, children, sub, first }: { label: string; href?: string; extra?: ReactNode; children: ReactNode; sub: ReactNode; first?: boolean }) {
   return (
     <div className={cx('min-w-0 px-6 pb-6 pt-5', first && 'sm:pl-7')}>
-      <div className="flex h-6 items-center justify-between gap-2 whitespace-nowrap text-[0.9rem] text-fg2">{label}{extra}</div>
+      <div className="flex h-6 items-center justify-between gap-2 whitespace-nowrap text-[0.9rem] text-fg2">
+        {href ? <Link href={href} className="hover:text-fg hover:underline">{label}</Link> : label}
+        {extra}
+      </div>
       <div className={cx('truncate font-bold tracking-tight tabular-nums', first ? 'mb-1.5 mt-2.5 text-[2.9rem] leading-none' : 'mb-2 mt-3.5 text-[1.85rem] leading-none')}>{children}</div>
       <div className="flex flex-wrap items-center gap-2 text-[0.85rem] text-muted">{sub}</div>
     </div>
@@ -32,11 +36,38 @@ export function OverviewView() {
   const { run, busy } = useCommand();
   const [tab, setTab] = useState<Tab>('positions');
   const [source, setSource] = useState<Source>('all');
+  const [kolFilter, setKolFilter] = useState<string | null>(null);
   const [dateRange, setDateRange] = useState<DateRangeValue>(() => rangeForPreset('today'));
   const [unit, setUnit] = useState<'USD' | 'SOL'>('USD');
   const [frozen, setFrozen] = useState<FeedEvent[] | null>(null);
   const loading = state.connection === 'connecting';
   const px = state.balances.solUsd;
+
+  // Deep-link support: /?tab=positions|closed|signals&kol=<kolId>
+  useEffect(() => {
+    const readParams = () => {
+      const sp = new URLSearchParams(window.location.search);
+      const t = sp.get('tab');
+      if (t === 'positions' || t === 'closed' || t === 'signals') setTab(t);
+      const k = sp.get('kol');
+      if (k) {
+        setKolFilter(k);
+        setDateRange(rangeForPreset('all'));
+      }
+    };
+    readParams();
+    window.addEventListener('popstate', readParams);
+    return () => window.removeEventListener('popstate', readParams);
+  }, []);
+
+  const clearKolFilter = () => {
+    setKolFilter(null);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('kol');
+      window.history.replaceState(null, '', url.pathname + url.search);
+    }
+  };
 
   const nowMs = Date.now();
   const rangeIncludesNow = dateRange.end >= nowMs - 60_000;
@@ -52,7 +83,10 @@ export function OverviewView() {
     () => (frozen ?? state.feed).filter((e) => e.ts >= dateRange.start && e.ts <= dateRange.end),
     [frozen, state.feed, dateRange],
   );
-  const bySource = <T extends { kolId: string | null }>(xs: T[], s: Source) => (s === 'all' ? xs : xs.filter((x) => (s === 'kol' ? !!x.kolId : !x.kolId)));
+  const bySource = <T extends { kolId: string | null }>(xs: T[], s: Source) => {
+    const filtered = kolFilter ? xs.filter((x) => x.kolId === kolFilter) : xs;
+    return s === 'all' ? filtered : filtered.filter((x) => (s === 'kol' ? !!x.kolId : !x.kolId));
+  };
 
   // All KPIs synced to the selected dateRange
   const realizedSol = closedP.reduce((a, c) => a + c.proceedsSol - c.entrySol, 0);
@@ -123,7 +157,9 @@ export function OverviewView() {
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-[2.25rem] font-bold leading-tight tracking-tight">Overview</h1>
-          <p className="mt-1 text-[0.95rem] text-fg2">{dateStr} · Watching {enabled} KOL{enabled === 1 ? '' : 's'}</p>
+          <p className="mt-1 text-[0.95rem] text-fg2">
+            {dateStr} · <Link href="/watchlist" className="hover:text-fg hover:underline">Watching {enabled} KOL{enabled === 1 ? '' : 's'}</Link>
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button type="button" role="switch" aria-checked={shadow} disabled={busy || killed || loading || !engineOnline}
@@ -141,7 +177,7 @@ export function OverviewView() {
       {/* KPI card */}
       <section aria-label="Summary" className="mb-8 grid overflow-hidden rounded-[1.4rem] border border-line2 bg-panel sm:grid-cols-2 lg:grid-cols-[1.35fr_1fr_1fr_1fr_1fr] stat-grid">
         {loading ? Array.from({ length: 5 }).map((_, i) => <div key={i} className="px-6 py-6"><Skeleton className="h-4 w-24" /><Skeleton className="mt-4 h-9 w-36" /><Skeleton className="mt-3 h-3 w-28" /></div>) : <>
-          <Kpi first label="Total balance" sub={<><span className={tone(pnlUsd)}>{fmtUsd(pnlUsd, true)}</span><PctChip v={totalPnlPct} />{dateRange.label.toLowerCase()}</>}>{fmtUsd(total)}</Kpi>
+          <Kpi first label="Total balance" href="/wallets" sub={<><span className={tone(pnlUsd)}>{fmtUsd(pnlUsd, true)}</span><PctChip v={totalPnlPct} />{dateRange.label.toLowerCase()}</>}>{fmtUsd(total)}</Kpi>
           <Kpi label="Period PnL" extra={
             <span role="group" aria-label="Units" className="inline-flex rounded-lg bg-raised p-0.5">
               {(['USD', 'SOL'] as const).map((u) => <button key={u} type="button" aria-pressed={unit === u} onClick={() => setUnit(u)} className={cx('rounded-md px-2 py-0.5 text-[0.72rem] font-semibold', unit === u ? 'bg-[#2b2b31] text-fg' : 'text-muted')}>{u}</button>)}
@@ -154,19 +190,27 @@ export function OverviewView() {
             {winRate == null ? '—' : `${winRate.toFixed(1)}%`}
             <span className={cx('mt-3 block h-1.5 overflow-hidden rounded-full', winRate == null ? 'bg-line2' : 'bg-rose-400/45')}><span className="block h-full rounded-full bg-emerald-400" style={{ width: `${winRate ?? 0}%` }} /></span>
           </Kpi>
-          <Kpi label="KOLs" sub={<>{enabled} enabled · {kolFills} buys {dateRange.label.toLowerCase()}</>}>{state.kols.length}</Kpi>
+          <Kpi label="KOLs" href="/watchlist" sub={<>{enabled} enabled · {kolFills} buys {dateRange.label.toLowerCase()}</>}>{state.kols.length}</Kpi>
         </>}
       </section>
 
       {/* tabs + source filter */}
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div role="tablist" aria-label="Views" className="inline-flex max-w-full gap-1 overflow-x-auto rounded-[0.9rem] border border-line bg-panel p-1">
-          {([['positions', 'Positions', open.length], ['closed', 'Closed', closedP.length], ['signals', 'Live signals', signalsP.length]] as const).map(([v, l, n]) => (
-            <button key={v} role="tab" type="button" aria-selected={tab === v} onClick={() => setTab(v)}
-              className={cx('inline-flex items-center gap-2.5 whitespace-nowrap rounded-[0.65rem] px-4 py-2 text-[0.95rem] font-medium', tab === v ? 'bg-raised text-fg' : 'text-fg2 hover:text-fg')}>
-              {v === 'signals' && <span aria-hidden className="size-1.5 rounded-full bg-emerald-400" />}{l}<span className="text-[0.8rem] tabular-nums text-muted">{n}</span>
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div role="tablist" aria-label="Views" className="inline-flex max-w-full gap-1 overflow-x-auto rounded-[0.9rem] border border-line bg-panel p-1">
+            {([['positions', 'Positions', open.length], ['closed', 'Closed', closedP.length], ['signals', 'Live signals', signalsP.length]] as const).map(([v, l, n]) => (
+              <button key={v} role="tab" type="button" aria-selected={tab === v} onClick={() => setTab(v)}
+                className={cx('inline-flex items-center gap-2.5 whitespace-nowrap rounded-[0.65rem] px-4 py-2 text-[0.95rem] font-medium', tab === v ? 'bg-raised text-fg' : 'text-fg2 hover:text-fg')}>
+                {v === 'signals' && <span aria-hidden className="size-1.5 rounded-full bg-emerald-400" />}{l}<span className="text-[0.8rem] tabular-nums text-muted">{n}</span>
+              </button>
+            ))}
+          </div>
+          {kolFilter && (
+            <span className="inline-flex items-center gap-1.5 rounded-[0.7rem] border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs font-medium text-accent">
+              Filtered: <Link href={`/watchlist#${encodeURIComponent(kolFilter)}`} className="hover:underline">@{kolLabel(state, kolFilter)}</Link>
+              <button type="button" onClick={clearKolFilter} aria-label="Clear KOL filter" className="ml-0.5 rounded p-0.5 hover:bg-accent/20"><X className="size-3.5" /></button>
+            </span>
+          )}
         </div>
         <div role="group" aria-label="Source" className="inline-flex gap-1 rounded-[0.9rem] border border-line bg-panel p-1">
           {([['all', 'All'], ['kol', 'KOL'], ['launch', 'Launch']] as const).map(([v, l]) => (

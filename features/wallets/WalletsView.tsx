@@ -239,6 +239,14 @@ export function WalletsView() {
       usdc={0}
       solUsd={b.solUsd}
       onCopy={copyAddr}
+      secondaryAction={
+        <Link
+          href="/?tab=positions"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-fg2 hover:bg-white/[0.09] hover:text-fg"
+        >
+          Positions ({paperOpen.length})
+        </Link>
+      }
       primaryAction={
         <button
           type="button"
@@ -327,7 +335,7 @@ export function WalletsView() {
       onReceive={hotWallet ? () => setReceiveAddr({ label: 'Bot Trading Wallet', addr: hotWallet }) : undefined}
       primaryAction={
         <Link
-          href="/settings"
+          href="/settings#wallets"
           className="inline-flex h-10 items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-5 text-sm font-semibold text-fg transition-colors hover:bg-white/[0.12]"
         >
           <Settings className="size-4" aria-hidden />
@@ -451,7 +459,7 @@ export function WalletsView() {
           <div className="grid grid-cols-2 gap-3 rounded-xl border border-line bg-card p-3.5 tabular-nums">
             <div>
               <div className="text-xs text-muted">Paper buy size</div>
-              <div className="mt-0.5 text-base font-bold text-fg">{fmtSol(paperBuySol, 2)} SOL</div>
+              <Link href="/settings#strategy" onClick={() => setPaperModal(false)} className="mt-0.5 inline-block text-base font-bold text-fg hover:text-accent hover:underline">{fmtSol(paperBuySol, 2)} SOL</Link>
             </div>
             <div>
               <div className="text-xs text-muted">Open paper value</div>
@@ -459,7 +467,7 @@ export function WalletsView() {
             </div>
             <div>
               <div className="text-xs text-muted">Open paper positions</div>
-              <div className="mt-0.5 font-semibold text-fg">{paperOpen.length} / 5</div>
+              <Link href="/?tab=positions" onClick={() => setPaperModal(false)} className="mt-0.5 inline-block font-semibold text-fg hover:text-accent hover:underline">{paperOpen.length} / 5</Link>
             </div>
             <div>
               <div className="text-xs text-muted">Session realized PnL</div>

@@ -57,6 +57,8 @@ function DiffList({ changes }: { changes: ConfigChange[] }) {
   );
 }
 
+const TAB_KEYS = new Set<SectionKey>(TABS.map((t) => t.key));
+
 export function SettingsView() {
   const { state, send, toast } = useTerminal();
   const cs = state.config;
@@ -69,6 +71,24 @@ export function SettingsView() {
   const [importErr, setImportErr] = useState<{ error: string; errors?: FieldErrors } | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Deep-link support: /settings#network|wallets|strategy|landers|exits|treasury
+  useEffect(() => {
+    const readHash = () => {
+      const frag = decodeURIComponent(window.location.hash.replace(/^#/, '')) as SectionKey;
+      if (TAB_KEYS.has(frag)) setTab(frag);
+    };
+    readHash();
+    window.addEventListener('hashchange', readHash);
+    return () => window.removeEventListener('hashchange', readHash);
+  }, []);
+
+  const selectTab = useCallback((next: SectionKey) => {
+    setTab(next);
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', `#${next}`);
+    }
+  }, []);
 
   // Follow the engine's config while there are no local edits.
   const dirtyRef = useRef(false);
@@ -168,7 +188,7 @@ export function SettingsView() {
           {TABS.map((t) => {
             const n = errCount(t.key), dirty = changes.some((c) => c.path.startsWith(t.key + '.'));
             return (
-              <button key={t.key} role="tab" type="button" aria-selected={tab === t.key} onClick={() => setTab(t.key)}
+              <button key={t.key} role="tab" type="button" aria-selected={tab === t.key} onClick={() => selectTab(t.key)}
                 className={cx('inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-[0.65rem] px-3.5 py-2 text-[0.9rem] font-medium', tab === t.key ? 'bg-raised text-fg' : 'text-fg2 hover:text-fg')}>
                 {t.label}
                 {n > 0 ? <span className="rounded-full bg-rose-400/15 px-1.5 text-[0.7rem] font-semibold text-rose-300" aria-label={`${n} errors`}>{n}</span>
@@ -190,7 +210,7 @@ export function SettingsView() {
               {totalErrors > 0 && (
                 <button
                   type="button"
-                  onClick={() => { const first = TABS.find((t) => errCount(t.key) > 0); if (first) setTab(first.key); }}
+                  onClick={() => { const first = TABS.find((t) => errCount(t.key) > 0); if (first) selectTab(first.key); }}
                   className="text-rose-300 underline decoration-rose-400/50 underline-offset-2 hover:text-rose-200"
                 >
                   {' '}· {totalErrors} error{totalErrors > 1 ? 's' : ''} to fix

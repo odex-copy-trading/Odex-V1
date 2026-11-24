@@ -124,9 +124,11 @@ export function DiagnosticsView() {
       detail: engineOnline
         ? `Connected · status ${state.engine.status} · slot ${state.chain.slot}`
         : 'Offline — waiting for whal-engine on /internal/engine',
+      href: engineOnline ? '/execution' : '/settings#network',
     });
 
     const cfgErrCount = configValidation?.length ?? 0;
+    const firstErrSection = configValidation?.[0]?.[0]?.split('.')[0];
     out.push({
       name: 'Configuration schema',
       status: !configValidation ? 'warn' : cfgErrCount === 0 ? 'ok' : 'warn',
@@ -135,7 +137,7 @@ export function DiagnosticsView() {
         : cfgErrCount === 0
           ? `v${state.config?.version} valid · ${state.config?.pendingRestart.length ?? 0} pending restart`
           : `${cfgErrCount} required field${cfgErrCount === 1 ? '' : 's'} to complete`,
-      href: cfgErrCount > 0 ? '/settings' : undefined,
+      href: cfgErrCount > 0 ? `/settings${firstErrSection ? `#${firstErrSection}` : ''}` : undefined,
     });
 
     const nonces = state.config?.nonces ?? [];
@@ -144,7 +146,7 @@ export function DiagnosticsView() {
       name: 'Durable nonce pool',
       status: nonces.length === 0 ? 'warn' : readyNonces === nonces.length ? 'ok' : 'warn',
       detail: nonces.length === 0 ? 'No nonce accounts configured yet' : `${readyNonces}/${nonces.length} ready`,
-      href: '/settings',
+      href: '/settings#wallets',
     });
 
     out.push({
@@ -216,14 +218,20 @@ export function DiagnosticsView() {
             )}
 
             <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">Encrypted secrets</div>
+              <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-muted">
+                <span>Encrypted secrets ({SECRETS.length})</span>
+                <Link href="/settings#network" className="font-medium normal-case text-accent hover:underline">Manage in Settings</Link>
+              </div>
               <ul className="grid gap-1.5 sm:grid-cols-2">
-                {SECRETS.slice(0, 8).map((s) => {
+                {SECRETS.map((s) => {
                   const st = state.config?.secrets[s.id];
+                  const sec = s.id.split('.')[0];
                   return (
-                    <li key={s.id} className="flex items-center justify-between gap-2 rounded-lg border border-line bg-card px-3 py-2 text-xs">
-                      <span className="truncate text-fg2">{s.label}</span>
-                      <Badge tone={st?.set ? 'ok' : 'neutral'}>{st?.set ? 'Set' : 'Unset'}</Badge>
+                    <li key={s.id}>
+                      <Link href={`/settings#${sec}`} className="flex items-center justify-between gap-2 rounded-lg border border-line bg-card px-3 py-2 text-xs hover:bg-raised">
+                        <span className="truncate text-fg2">{s.label}</span>
+                        <Badge tone={st?.set ? 'ok' : 'neutral'}>{st?.set ? 'Set' : 'Unset'}</Badge>
+                      </Link>
                     </li>
                   );
                 })}
@@ -246,7 +254,13 @@ export function DiagnosticsView() {
                     <tr key={a.id} className="hover:bg-card">
                       <Td mono className="text-fg2">{fmtClock(a.ts)}</Td>
                       <Td mono>{a.action}</Td>
-                      <Td mono className="text-fg2">{a.target ?? '—'}</Td>
+                      <Td mono className="text-fg2">
+                        {a.target?.startsWith('kol_')
+                          ? <Link href={`/watchlist#${encodeURIComponent(a.target)}`} className="text-accent hover:underline">{a.target}</Link>
+                          : a.action.startsWith('config.')
+                            ? <Link href="/settings" className="text-accent hover:underline">{a.target ?? 'config'}</Link>
+                            : (a.target ?? '—')}
+                      </Td>
                       <Td className="text-muted">{a.actor}</Td>
                     </tr>
                   ))}

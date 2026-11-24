@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { ArrowUpRight, Copy, Layers, LoaderCircle, Radar, Recycle } from '@/components/icons';
 import { EmptyState, TableSkeleton, cx } from '@/components/ui';
 import { kolLabel, useTerminal } from '@/lib/store';
@@ -8,7 +9,11 @@ import { fmtAgo, fmtClock, fmtCompact, fmtSlot, fmtSol, fmtUsd, tone } from '@/l
 import type { ClosedPosition, FeedEvent, Position, TerminalState } from '@/lib/types';
 import { LANDER_NAME, NumCell, PctChip, REVERT_META, RTd, RTh, RevertBar, StatusChip, TokenCell, VENUE_SHORT } from './shared';
 
-const at = (s: TerminalState, kolId: string | null) => (kolId ? <span className="font-medium text-accent">@{kolLabel(s, kolId)}</span> : <span className="text-sky-300">new launch</span>);
+const at = (s: TerminalState, kolId: string | null) => (
+  kolId
+    ? <Link href={`/watchlist#${encodeURIComponent(kolId)}`} className="font-medium text-accent hover:underline">@{kolLabel(s, kolId)}</Link>
+    : <span className="text-sky-300">new launch</span>
+);
 const usd = (sol: number, px: number, sign = false) => fmtUsd(sol * px, sign);
 
 // ---------------- open positions ----------------
@@ -127,7 +132,7 @@ export function SignalsTab({ rows }: { rows: FeedEvent[] }) {
               <RTd><TokenCell symbol={e.symbol} badge={e.kind === 'sell' ? 'SELL' : e.kind === 'launch' ? 'LAUNCH' : 'KOL BUY'} mint={e.mint} ts={e.ts} image={e.image} sub={<>{VENUE_SHORT[e.venue].toLowerCase()} · {at(state, e.kolId)}</>} /></RTd>
               <RTd right className="hidden md:table-cell"><NumCell top={`${fmtSol(e.sizeSol, e.kind === 'sell' ? 4 : 2)} SOL`} bottom={e.kind === 'sell' ? 'proceeds' : 'buy size'} /></RTd>
               <RTd right className="hidden lg:table-cell"><NumCell top={e.fanout ? `${e.fanout} tx` : '—'} bottom={e.cuUsed ? `${fmtCompact(e.cuUsed)} CU` : 'not sent'} /></RTd>
-              <RTd className="hidden lg:table-cell"><div className="text-[0.95rem]">{e.winner ? LANDER_NAME[e.winner] : <span className="text-muted">—</span>}</div><div className="text-[0.88rem] text-muted">{e.fanout ? `${rev} reverted` : ''}</div></RTd>
+              <RTd className="hidden lg:table-cell"><div className="text-[0.95rem]">{e.winner ? <Link href="/execution" className="hover:text-accent hover:underline">{LANDER_NAME[e.winner]}</Link> : <span className="text-muted">—</span>}</div><div className="text-[0.88rem] text-muted">{e.fanout ? `${rev} reverted` : ''}</div></RTd>
               <RTd className="hidden xl:table-cell">{e.fanout && e.kind !== 'sell' ? <div className="w-40"><RevertBar r={e.reverts} total={e.fanout} /><div className="mt-1.5 truncate text-[0.75rem] text-muted tabular-nums">{REVERT_META.filter((m) => e.reverts[m.key]).map((m) => `${m.short} ${e.reverts[m.key]}`).join(' · ') || 'none'}</div></div> : <span className="text-[0.88rem] text-muted">{e.note ?? '—'}</span>}</RTd>
               <RTd><StatusChip tone={OUTCOME[e.outcome].tone}>{OUTCOME[e.outcome].label}</StatusChip></RTd>
               <RTd right className="hidden sm:table-cell"><NumCell top={`#${fmtSlot(e.slot)}`} bottom={fmtClock(e.ts)} /></RTd>

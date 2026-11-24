@@ -1,7 +1,8 @@
 'use client';
 
 import { useMemo, useState, type ReactNode } from 'react';
-import { ChevronDown, Server } from '@/components/icons';
+import Link from 'next/link';
+import { ArrowUpRight, ChevronDown, Server, Settings } from '@/components/icons';
 import { Badge, Card, CardHeader, EmptyState, PageHeader, Skeleton, TableSkeleton, Td, Th, cx } from '@/components/ui';
 import { useTerminal } from '@/lib/store';
 import { fmtInt, fmtPct, fmtSol } from '@/lib/format';
@@ -48,7 +49,12 @@ export function ExecutionView() {
 
   return (
     <>
-      <PageHeader title="Execution & landers" sub="SWQoS landing providers, ranked by who actually lands the winning transaction." />
+      <PageHeader title="Execution & landers" sub="SWQoS landing providers, ranked by who actually lands the winning transaction."
+        actions={
+          <Link href="/settings#landers" className="inline-flex h-9 items-center gap-1.5 rounded-[0.65rem] border border-line bg-card px-3 text-xs font-medium text-fg2 hover:bg-raised hover:text-fg">
+            <Settings className="size-3.5" aria-hidden />Configure landers
+          </Link>
+        } />
       <Card className="mb-4">
         <div className="grid grid-cols-2 lg:grid-cols-5 stat-grid">
           {[
@@ -69,7 +75,7 @@ export function ExecutionView() {
       <Card className="mb-4">
         <CardHeader title="Lander performance matrix" meta={<span>Win share = share of all winning transactions. Slot delta = landed slot minus trigger slot.</span>} />
         {loading ? <TableSkeleton rows={7} cols={8} /> : state.landers.length === 0 ? (
-          <EmptyState icon={Server} title="No landers configured">Enable at least one landing provider in Settings.</EmptyState>
+          <EmptyState icon={Server} title="No landers configured" action={<Link href="/settings#landers" className="inline-flex h-9 items-center gap-1.5 rounded-[0.65rem] bg-accent px-3.5 text-xs font-semibold text-white hover:opacity-90">Open Lander Settings</Link>}>Enable at least one landing provider in Settings.</EmptyState>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[56rem] text-[0.8rem]">
@@ -83,7 +89,7 @@ export function ExecutionView() {
                     <Td>
                       <div className="flex items-center gap-2">
                         <span className="num w-4 text-xs text-muted">{i + 1}</span>
-                        <span className="font-semibold">{l.name}</span>
+                        <Link href="/settings#landers" className="font-semibold hover:text-accent hover:underline">{l.name}</Link>
                         {!l.enabled && <Badge>Off</Badge>}
                       </div>
                     </Td>
@@ -108,7 +114,12 @@ export function ExecutionView() {
       </Card>
 
       <Card>
-        <CardHeader title="Revert breakdown" meta={<span>Across the last {state.feed.length} feed events. Reverted txs pay base fee only; tips sit at the end of the tx.</span>} />
+        <CardHeader title="Revert breakdown" meta={<span>Across the last {state.feed.length} feed events. Reverted txs pay base fee only; tips sit at the end of the tx.</span>}
+          actions={
+            <Link href="/?tab=signals" className="inline-flex h-8 items-center gap-1 rounded-[0.6rem] border border-line bg-card px-2.5 text-xs font-medium text-fg2 hover:bg-raised hover:text-fg">
+              Live signals <ArrowUpRight className="size-3.5" aria-hidden />
+            </Link>
+          } />
         <div className="p-5">
           {loading ? <Skeleton className="h-3 w-full" /> : aggTotal === 0 ? <p className="text-sm text-muted">No reverts yet.</p> : (
             <>

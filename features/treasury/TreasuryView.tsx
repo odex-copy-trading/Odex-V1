@@ -1,7 +1,8 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ArrowRightLeft, Coins, Recycle } from '@/components/icons';
+import Link from 'next/link';
+import { ArrowRightLeft, Coins, Recycle, Settings, Wallet } from '@/components/icons';
 import { Badge, Card, CardHeader, EmptyState, PageHeader, Segmented, Skeleton, TableSkeleton, Td, Th, cx } from '@/components/ui';
 import { portfolioUsd, useTerminal } from '@/lib/store';
 import { fmtAgo, fmtClock, fmtInt, fmtSlot, fmtSol, fmtUsd, shortKey } from '@/lib/format';
@@ -26,9 +27,23 @@ export function TreasuryView() {
     ['Portfolio', fmtUsd(portfolioUsd(state)), `SOL @ ${fmtUsd(b.solUsd)}`],
   ];
 
+  const sweepCfg = state.config?.config.treasury;
+  const sweepClip = sweepCfg?.clip_wsol ?? 20;
+  const sweepThresh = sweepCfg?.trigger_wsol_threshold ?? 50;
+
   return (
     <>
-      <PageHeader title="Treasury & inventory" sub="Liquid balances, WSOL → USDC sweeps, quote-asset inventory and rent reclaimed." />
+      <PageHeader title="Treasury & inventory" sub="Liquid balances, WSOL → USDC sweeps, quote-asset inventory and rent reclaimed."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href="/wallets" className="inline-flex h-9 items-center gap-1.5 rounded-[0.65rem] border border-line bg-card px-3 text-xs font-medium text-fg2 hover:bg-raised hover:text-fg">
+              <Wallet className="size-3.5" aria-hidden />Manage wallets
+            </Link>
+            <Link href="/settings#treasury" className="inline-flex h-9 items-center gap-1.5 rounded-[0.65rem] border border-line bg-card px-3 text-xs font-medium text-fg2 hover:bg-raised hover:text-fg">
+              <Settings className="size-3.5" aria-hidden />Auto-sweep settings
+            </Link>
+          </div>
+        } />
       <Card className="mb-4">
         <div className="grid grid-cols-2 lg:grid-cols-5 stat-grid">
           {cards.map(([l, v, s]) => (
@@ -45,7 +60,7 @@ export function TreasuryView() {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
         <Card>
-          <CardHeader title="Auto-sweep history" meta={<><span>WSOL → USDC in 20 SOL clips</span><span>{swept.length} confirmed · <span className="num text-fg">{fmtUsd(sweptUsd)}</span></span></>} />
+          <CardHeader title="Auto-sweep history" meta={<><span>WSOL → USDC in {sweepClip} SOL clips above {sweepThresh} SOL</span><span>{swept.length} confirmed · <span className="num text-fg">{fmtUsd(sweptUsd)}</span></span></>} />
           {loading ? <TableSkeleton rows={6} cols={5} /> : state.sweeps.length === 0 ? (
             <EmptyState icon={ArrowRightLeft} title="No sweeps yet">Sweeps run when the WSOL vault is above its threshold.</EmptyState>
           ) : (
@@ -101,15 +116,17 @@ export function TreasuryView() {
           <Card>
             <CardHeader title={<span className="flex items-center gap-2"><Recycle className="size-4 text-muted" aria-hidden />Rent reclaim</span>} meta={<span>Seeded token accounts are closed after full exits to recover rent.</span>} />
             <dl className="grid grid-cols-2 gap-px bg-line sm:grid-cols-4">
-              {[
-                ['Accounts closed', fmtInt(state.rent.accountsClosed)],
-                ['SOL reclaimed', fmtSol(state.rent.reclaimedSol, 4)],
-                ['Open seeded', fmtInt(state.positions.length)],
-                ['Per account', fmtSol(state.rent.rentPerAccountSol, 6)],
-              ].map(([l, v]) => (
+              {([
+                ['Accounts closed', fmtInt(state.rent.accountsClosed), undefined],
+                ['SOL reclaimed', fmtSol(state.rent.reclaimedSol, 4), undefined],
+                ['Open seeded', fmtInt(state.positions.length), '/?tab=positions'],
+                ['Per account', fmtSol(state.rent.rentPerAccountSol, 6), undefined],
+              ] as const).map(([l, v, href]) => (
                 <div key={l} className="bg-panel px-4 py-3">
                   <dt className="text-[0.7rem] font-semibold uppercase tracking-wider text-muted">{l}</dt>
-                  <dd className={cx('num mt-1 text-lg font-semibold', loading && 'text-muted')}>{loading ? '—' : v}</dd>
+                  <dd className={cx('num mt-1 text-lg font-semibold', loading && 'text-muted')}>
+                    {loading ? '—' : href ? <Link href={href} className="hover:text-accent hover:underline">{v}</Link> : v}
+                  </dd>
                 </div>
               ))}
             </dl>

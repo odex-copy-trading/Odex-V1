@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { Bell, ChevronDown, Copy, Download, Eye, OctagonX, Pause, Play, Plus, Power, Search, Users, Wallet } from '@/components/icons';
+import { Bell, ChevronDown, Copy, Download, Eye, OctagonX, Pause, Play, Plus, Power, Search, Settings, Users, Wallet, Zap } from '@/components/icons';
 import { Button, Dot, Modal, Skeleton, cx } from '@/components/ui';
 import { usePhantom } from '@/lib/phantom';
 import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
@@ -342,7 +342,13 @@ function WalletPill() {
       <Modal open={depositOpen} onClose={() => setDepositOpen(false)} title="Deposit SOL to Bot Wallet">
         <p className="text-sm text-fg2">Send native SOL from Phantom or any Solana wallet to your hot trading wallet address below:</p>
         <div className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-line2 bg-card px-3 py-2.5">
-          <code className="num break-all text-xs text-fg">{hotWallet || 'Set your Hot wallet public key in Settings → Wallets & Nonce Pool'}</code>
+          {hotWallet ? (
+            <code className="num break-all text-xs text-fg">{hotWallet}</code>
+          ) : (
+            <Link href="/settings#wallets" onClick={() => setDepositOpen(false)} className="text-xs font-medium text-accent hover:underline">
+              Set your Hot wallet public key in Settings → Wallets &amp; Nonce Pool
+            </Link>
+          )}
           {hotWallet && (
             <Button size="sm" variant="ghost" icon={Copy} onClick={() => void copyAddr(hotWallet, 'Bot wallet address')}>Copy</Button>
           )}
@@ -374,17 +380,32 @@ function Notifications() {
           <div className="border-b border-line px-4 py-3 text-sm font-semibold">Notifications</div>
           {state.engine.status === 'KILLED' && <div className="border-b border-line bg-rose-500/10 px-4 py-2.5 text-sm text-rose-200">Kill switch engaged {fmtAgo(state.engine.changedAt)} ago{state.engine.reason ? `: ${state.engine.reason}` : ''}</div>}
           {items.length === 0 ? <p className="px-4 py-6 text-center text-sm text-muted">Nothing yet.</p> : items.map((e) => (
-            <div key={e.id} className="border-b border-line px-4 py-2.5 text-sm last:border-0">
+            <Link key={e.id} href={e.kind === 'sell' ? '/?tab=closed' : '/?tab=positions'} onClick={() => setOpen(false)} className="block border-b border-line px-4 py-2.5 text-sm last:border-0 hover:bg-raised">
               <span className={e.kind === 'sell' ? 'text-fg' : 'text-emerald-300'}>{e.kind === 'sell' ? `Sold $${e.symbol}` : `Filled $${e.symbol}`}</span>
               <span className="text-fg2"> · {e.kind === 'sell' ? `${fmtSol(e.sizeSol, 4)} SOL${e.note ? ` · ${e.note}` : ''}` : `${e.sizeSol} SOL via ${e.winner ?? '—'}`}</span>
               <div className="mt-0.5 text-xs text-muted">{fmtAgo(e.ts)} ago · slot #{fmtSlot(e.slot)}</div>
-            </div>
+            </Link>
           ))}
         </div>
       )}
     </div>
   );
 }
+
+const QUICK_LINKS: { href: string; label: string; keywords: string }[] = [
+  { href: '/', label: 'Overview / Live feed', keywords: 'home overview positions closed signals pnl' },
+  { href: '/watchlist', label: 'KOL watchlist', keywords: 'kol wallets watchlist copy' },
+  { href: '/execution', label: 'Execution & landers', keywords: 'execution landers swqos jito nozomi astralane tpu' },
+  { href: '/treasury', label: 'Treasury & inventory', keywords: 'treasury sweep usdc wsol rent inventory' },
+  { href: '/wallets', label: 'Wallets', keywords: 'wallets phantom paper hot balance deposit' },
+  { href: '/diagnostics', label: 'Bug & system diagnostics', keywords: 'diagnostics health audit bugs status' },
+  { href: '/settings#network', label: 'Settings · Network & Ingestion', keywords: 'settings network rpc shredstream helius' },
+  { href: '/settings#wallets', label: 'Settings · Wallets & Nonce Pool', keywords: 'settings wallets hot key nonce pool' },
+  { href: '/settings#strategy', label: 'Settings · Strategy & Buy Guards', keywords: 'settings strategy buy guards slippage curve' },
+  { href: '/settings#landers', label: 'Settings · Multi-Lander & Fees', keywords: 'settings landers fees tips jito nozomi astralane' },
+  { href: '/settings#exits', label: 'Settings · Exit Ladder & Risk', keywords: 'settings exits stop loss take profit trailing' },
+  { href: '/settings#treasury', label: 'Settings · Treasury Auto-Sweep', keywords: 'settings treasury auto sweep clip threshold' },
+];
 
 function GlobalSearch() {
   const { state } = useTerminal();
@@ -402,6 +423,8 @@ function GlobalSearch() {
   const s = q.trim().toLowerCase().replace(/^\$/, '');
   const kols = s ? state.kols.filter((k) => k.label.toLowerCase().includes(s) || k.pubkey.toLowerCase().includes(s)).slice(0, 5) : [];
   const tokens = s ? [...new Map([...state.positions, ...state.closed].filter((p) => p.symbol.toLowerCase().includes(s) || p.mint.toLowerCase() === s).map((p) => [p.mint, p])).values()].slice(0, 5) : [];
+  const landers = s ? state.landers.filter((l) => l.name.toLowerCase().includes(s) || l.id.toLowerCase().includes(s)).slice(0, 4) : [];
+  const sections = s ? QUICK_LINKS.filter((p) => p.label.toLowerCase().includes(s) || p.keywords.includes(s)).slice(0, 5) : [];
   const newWallet = isPubkey(q.trim()) && !state.kols.some((k) => k.pubkey === q.trim());
   const done = () => { setOpen(false); setQ(''); };
   const item = 'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-raised';
@@ -410,7 +433,7 @@ function GlobalSearch() {
       <label className="flex h-9 items-center gap-2 rounded-[0.72rem] border border-line bg-card px-3 text-muted focus-within:border-line2">
         <Search className="size-3.5 shrink-0" aria-hidden />
         <input ref={input} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)}
-          placeholder="Search KOLs, tokens, wallets" aria-label="Search KOLs, tokens, wallets" autoComplete="off" spellCheck={false}
+          placeholder="Search KOLs, tokens, landers, settings" aria-label="Search KOLs, tokens, landers, settings" autoComplete="off" spellCheck={false}
           className="min-w-0 flex-1 bg-transparent text-[0.85rem] text-fg outline-none placeholder:text-muted" />
         <kbd className="hidden rounded-md border border-line2 px-1.5 text-[0.7rem] text-muted sm:block">/</kbd>
       </label>
@@ -421,7 +444,11 @@ function GlobalSearch() {
           {kols.map((k) => <Link key={k.id} href={`/watchlist#${k.id}`} onClick={done} className={item}><Users className="size-4 text-muted" aria-hidden />{k.label}<span className="num ml-auto text-xs text-muted">{shortKey(k.pubkey)}</span></Link>)}
           {tokens.length > 0 && <div className="px-3 pb-1 pt-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">Tokens</div>}
           {tokens.map((t) => <a key={t.mint} href={`https://solscan.io/token/${encodeURIComponent(t.mint)}`} target="_blank" rel="noopener noreferrer" onClick={done} className={item}><span className="font-semibold">${t.symbol}</span><span className="num ml-auto text-xs text-muted">{shortKey(t.mint)}</span></a>)}
-          {!newWallet && kols.length === 0 && tokens.length === 0 && <p className="px-3 py-3 text-sm text-muted">No matches for “{q.trim()}”.</p>}
+          {landers.length > 0 && <div className="px-3 pb-1 pt-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">Landers</div>}
+          {landers.map((l) => <Link key={l.id} href="/execution" onClick={done} className={item}><Zap className="size-4 text-muted" aria-hidden />{l.name}<span className="ml-auto text-xs text-muted">{l.enabled ? 'Enabled' : 'Off'}</span></Link>)}
+          {sections.length > 0 && <div className="px-3 pb-1 pt-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">Sections &amp; Settings</div>}
+          {sections.map((p) => <Link key={p.href} href={p.href} onClick={done} className={item}><Settings className="size-4 text-muted" aria-hidden />{p.label}</Link>)}
+          {!newWallet && kols.length === 0 && tokens.length === 0 && landers.length === 0 && sections.length === 0 && <p className="px-3 py-3 text-sm text-muted">No matches for “{q.trim()}”.</p>}
         </div>
       )}
     </div>
@@ -492,19 +519,19 @@ export function BottomBar() {
         {loading ? <Skeleton className="h-3.5 w-80" /> : <>
           <span className={item}><b className="font-semibold text-fg">SOL</b><span className="tabular-nums">{state.balances.solUsd > 0 ? fmtUsd(state.balances.solUsd) : '—'}</span></span>
           <span className={item}><span className="text-muted">Slot</span><span className="num text-fg">{fmtSlot(c.slot)}</span></span>
-          <span className={item} title="Shred-to-detection latency"><span className="text-muted">ShredStream</span><span className={cx('num', latTone)}>{hasSlot ? `${lat} ms` : '—'}</span></span>
-          <span className={item} title="Durable nonce pool ready / total"><span className="text-muted">Nonces</span><span className={cx('num', nonceTone)}>{c.nonces.ready}/{c.nonces.total}</span></span>
+          <Link href="/settings#network" className={cx(item, 'hover:text-fg')} title="Shred-to-detection latency — click to configure Network"><span className="text-muted">ShredStream</span><span className={cx('num', latTone)}>{hasSlot ? `${lat} ms` : '—'}</span></Link>
+          <Link href="/settings#wallets" className={cx(item, 'hover:text-fg')} title="Durable nonce pool ready / total — click to manage Nonces"><span className="text-muted">Nonces</span><span className={cx('num', nonceTone)}>{c.nonces.ready}/{c.nonces.total}</span></Link>
           <span className={item} title="Dedupe ring buffer entries in use"><span className="text-muted">Ring buffer</span><span className="num text-fg">{c.ring.used}/{c.ring.size}</span>
             <span aria-hidden className="h-1 w-10 overflow-hidden rounded bg-line2"><span className={cx('block h-full', ringPct > 90 ? 'bg-amber-400' : 'bg-accent')} style={{ width: `${ringPct}%` }} /></span></span>
         </>}
       </div>
-      <div className="flex shrink-0 items-center gap-3">
+      <Link href="/diagnostics" className="flex shrink-0 items-center gap-3 hover:opacity-85" title="Open system diagnostics">
         <SourceBadge />
         <span className={item}>
           <Dot tone={conn === 'open' ? 'ok' : conn === 'connecting' ? 'warn' : 'bad'} />
           {conn === 'open' ? 'Connected' : conn === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
         </span>
-      </div>
+      </Link>
     </footer>
   );
 }
