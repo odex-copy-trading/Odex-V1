@@ -504,7 +504,7 @@ export class SolanaLiveFeed {
     // Selective quality launch filter: 0.5–5.0 SOL dev buy sweet spot + non-empty metadata (name, symbol, uri)
     const hasMeta = Boolean(msg.name?.trim() && msg.symbol?.trim() && (msg.uri?.trim() || ev.image));
     // Never auto-buy stale REST fallback launches (>2s old) — display them in Live Signals only.
-    const isFreshForAutoBuy = !msg.fromFallback || (typeof msg.createdAtMs === 'number' && ts - msg.createdAtMs <= 2_000);
+    const isFreshForAutoBuy = !msg.fromFallback || (typeof msg.createdAtMs === 'number' && ts - msg.createdAtMs <= 10_000);
     // 15-minute duplicate-symbol cooldown so copycat/vamp clones (e.g., 3x $TOAD) are never bought back-to-back.
     const normSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const lastSymBuy = normSym ? (this.recentBoughtSymbols.get(normSym) ?? 0) : 0;
@@ -832,7 +832,7 @@ export class SolanaLiveFeed {
       const baseVSol = vSol && vSol > 0 ? vSol : 30;
       const baseVTokens = vTokens && vTokens > 0 ? vTokens : 1_073_000_000;
       const basePrice = baseVSol / baseVTokens;
-      const competitionSol = ev.sizeSol >= 1.0 ? 1.5 : 0.6; // competing bots landing ahead in same/+1 slot
+      const competitionSol = ev.sizeSol >= 1.0 ? 0.5 : 0.25; // competing bots landing ahead in same/+1 slot
       const preVSol = baseVSol + competitionSol;
       const preVTokens = (baseVSol * baseVTokens) / preVSol;
 
@@ -840,7 +840,7 @@ export class SolanaLiveFeed {
       tokens = (preVTokens * netSolIn) / (preVSol + netSolIn);
       effectiveEntryPrice = buySol / tokens;
       // Filter 3 (Fhbh1D strict slippage cap): abort rather than overpay if front-run + buy impact exceeds slippage_bps (default 10%)
-      const maxSlipBps = Math.max(cfg.strategy.slippage_bps || 800, 1000);
+      const maxSlipBps = Math.max(cfg.strategy.slippage_bps || 800, 1500);
       const actualSlipBps = ((effectiveEntryPrice - basePrice) / basePrice) * 10_000;
       if (actualSlipBps > maxSlipBps) {
         console.log(`[solana-feed] Skipped $${ev.symbol}: entry slippage ${(actualSlipBps / 100).toFixed(1)}% > ${(maxSlipBps / 100).toFixed(1)}% cap`);
