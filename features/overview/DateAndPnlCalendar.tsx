@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { Calendar, ChevronDown, ChevronLeft, ChevronRight, Trophy, Upload, X } from '@/components/icons';
 import { cx } from '@/components/ui';
 import { fmtSol, fmtUsd } from '@/lib/format';
-import type { ClosedPosition } from '@/lib/types';
+import type { ClosedPosition, Position } from '@/lib/types';
 
 export type DatePreset = 'today' | 'yesterday' | '7d' | '30d' | 'month' | 'quarter' | 'all' | 'custom';
 
@@ -298,14 +298,19 @@ export function DateRangePicker({
 // ---------- PnL Calendar Modal ----------
 export function PnlCalendarButton({
   closed,
+  positions = [],
+  solUsd = 0,
   defaultPaper,
 }: {
   closed: ClosedPosition[];
+  positions?: Position[];
+  solUsd?: number;
   defaultPaper: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<'paper' | 'real'>(defaultPaper ? 'paper' : 'real');
   const [unit, setUnit] = useState<'USD' | 'SOL'>('USD');
+  const [highlightBest, setHighlightBest] = useState(true);
   const now = new Date();
   const [ym, setYm] = useState<{ y: number; m: number }>({ y: now.getFullYear(), m: now.getMonth() });
 
@@ -344,22 +349,46 @@ export function PnlCalendarButton({
     for (const c of filtered) {
       const day = new Date(c.closedAt).getDate();
       const netSol = c.proceedsSol - c.entrySol;
-      const netUsd = netSol * (c.solUsd || 0);
+      const netUsd = netSol * (c.solUsd || solUsd);
       const cur = map.get(day) ?? { sol: 0, usd: 0, count: 0 };
       cur.sol += netSol;
       cur.usd += netUsd;
       cur.count += 1;
       map.set(day, cur);
     }
+    // Fold live open positions into today's cell so the calendar stays 100% live and matches Overview Period PnL
+    const isCurrentMonth = now.getFullYear() === ym.y && now.getMonth() === ym.m;
+    if (isCurrentMonth && positions.length > 0) {
+      const today = now.getDate();
+      for (const p of positions) {
+        const isPaper = p.id.startsWith('paper_');
+        if (mode === 'paper' ? !isPaper : isPaper) continue;
+        const netSol = p.tokens * p.price + (p.proceedsSol ?? 0) - p.entrySol;
+        const netUsd = netSol * solUsd;
+        const cur = map.get(today) ?? { sol: 0, usd: 0, count: 0 };
+        cur.sol += netSol;
+        cur.usd += netUsd;
+        cur.count += 1;
+        map.set(today, cur);
+      }
+    }
     return map;
-  }, [filtered]);
+  }, [filtered, positions, mode, solUsd, ym, now]);
 
   let winDays = 0, loseDays = 0, winSum = 0, loseSum = 0, monthTotal = 0;
-  for (const v of daily.values()) {
+  let bestDay: number | null = null;
+  let bestVal = 0;
+  for (const [day, v] of daily.entries()) {
     const val = unit === 'USD' ? v.usd : v.sol;
     monthTotal += val;
-    if (val > 0) { winDays++; winSum += val; }
-    else if (val < 0) { loseDays++; loseSum += val; }
+    if (val > 0) {
+      winDays++;
+      winSum += val;
+      if (val > bestVal) { bestVal = val; bestDay = day; }
+    } else if (val < 0) {
+      loseDays++;
+      loseSum += val;
+    }
   }
   const winRatio = winDays + loseDays > 0 ? (winDays / (winDays + loseDays)) * 100 : 0;
   const fmtVal = (v: number, sign = false) =>
@@ -389,7 +418,13 @@ export function PnlCalendarButton({
 
       {open && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-xs" onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}>
-          <div role="dialog" aria-modal="true" aria-label="PnL Calendar" className="max-h-[94vh] w-full max-w-[62rem] overflow-auto rounded-2xl border border-white/10 bg-[#0b0c12] p-7 shadow-2xl">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="PnL Calendar"
+            style={{ fontFamily: 'var(--font-geist), Inter, system-ui, sans-serif' }}
+            className="max-h-[94vh] w-full max-w-[62rem] overflow-auto rounded-2xl border border-white/10 bg-[#0b0c12] p-7 shadow-2xl"
+          >
             {/* Header */}
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-3">
@@ -425,9 +460,18 @@ export function PnlCalendarButton({
                 >
                   {unit}
                 </button>
-                <span title={`${winDays} winning days`} className="grid size-7 place-items-center rounded-lg text-amber-400">
+                <button
+                  type="button"
+                  onClick={() => setHighlightBest((h) => !h)}
+                  aria-pressed={highlightBest}
+                  title={bestDay ? `Best performing day: ${monthTitle.split(' ')[0]} ${bestDay} (${fmtVal(bestVal, true)})` : 'Highlight best performing day'}
+                  className={cx(
+                    'grid size-7 place-items-center rounded-lg transition-colors',
+                    highlightBest ? 'bg-amber-400/15 text-amber-400 ring-1 ring-amber-400/40' : 'text-amber-400/50 hover:bg-white/[0.08] hover:text-amber-300',
+                  )}
+                >
                   <Trophy className="size-4" />
-                </span>
+                </button>
                 <button type="button" onClick={exportMonth} title="Export month CSV" className="grid size-7 place-items-center rounded-lg text-fg2 hover:bg-white/[0.08] hover:text-fg">
                   <Upload className="size-4" />
                 </button>
@@ -440,11 +484,11 @@ export function PnlCalendarButton({
             {/* Monthly total + win/loss bar */}
             <div className="mt-5 text-center text-base text-fg2">
               Total PnL for the month:{' '}
-              <b className={cx('num text-[1.15rem] font-bold', monthTotal > 0 ? 'text-emerald-400' : monthTotal < 0 ? 'text-rose-400' : 'text-white')}>
+              <b className={cx('text-[1.32rem] font-semibold tracking-tight tabular-nums', monthTotal > 0 ? 'text-emerald-400' : monthTotal < 0 ? 'text-rose-400' : 'text-white')}>
                 {fmtVal(monthTotal, monthTotal !== 0)}
               </b>
             </div>
-            <div className="mt-3.5 flex items-center justify-between text-[0.82rem] font-semibold tabular-nums">
+            <div className="mt-3.5 flex items-center justify-between text-[0.9rem] font-medium tabular-nums">
               <span className="text-emerald-400">{winDays} / {fmtVal(winSum)}</span>
               <span className="text-rose-400">{loseDays} / {fmtVal(loseSum)}</span>
             </div>
@@ -468,46 +512,59 @@ export function PnlCalendarButton({
                 const info = daily.get(day);
                 const val = info ? (unit === 'USD' ? info.usd : info.sol) : 0;
                 const isToday = now.getFullYear() === ym.y && now.getMonth() === ym.m && now.getDate() === day;
+                const isBest = highlightBest && bestDay === day && val > 0;
                 return (
                   <div
                     key={day}
-                    title={info ? `${info.count} closed trade${info.count === 1 ? '' : 's'}` : 'No closed trades'}
+                    title={info ? `${info.count} trade${info.count === 1 ? '' : 's'}${isBest ? ' · Best day of month' : ''}` : 'No trades'}
                     className={cx(
-                      'relative flex h-[5.75rem] flex-col rounded-[3px] px-2.5 py-2 font-sans transition-colors',
-                      val > 0
-                        ? 'bg-[#15392a]'
-                        : val < 0
-                          ? 'bg-[#3b1c23]'
-                          : 'bg-[#11131a]',
+                      'relative flex h-[5.75rem] flex-col rounded-[3px] px-2.5 py-2 transition-colors',
+                      isBest
+                        ? 'bg-[#3d3110] ring-1 ring-inset ring-amber-400/75'
+                        : val > 0
+                          ? 'bg-[#15392a]'
+                          : val < 0
+                            ? 'bg-[#3b1c23]'
+                            : 'bg-[#11131a]',
                     )}
                   >
-                    <div className="flex items-center justify-between text-[0.78rem] leading-none tabular-nums">
+                    <div className="flex items-center justify-between text-[0.86rem] leading-none tabular-nums">
                       <span className={cx(
-                        isToday
-                          ? 'font-semibold text-white'
-                          : val > 0
-                            ? 'text-[#39d98a]/85'
-                            : val < 0
-                              ? 'text-[#e56b7a]/85'
-                              : 'text-zinc-500',
+                        isBest
+                          ? 'font-semibold text-amber-300'
+                          : isToday
+                            ? 'font-semibold text-white'
+                            : val > 0
+                              ? 'text-[#39d98a]/85'
+                              : val < 0
+                                ? 'text-[#e56b7a]/85'
+                                : 'text-zinc-500',
                       )}>
                         {day}
                       </span>
                       {info ? (
                         <span className={cx(
-                          val > 0 ? 'text-[#39d98a]/85' : val < 0 ? 'text-[#e56b7a]/85' : 'text-zinc-500',
+                          isBest
+                            ? 'font-medium text-amber-300/90'
+                            : val > 0
+                              ? 'text-[#39d98a]/85'
+                              : val < 0
+                                ? 'text-[#e56b7a]/85'
+                                : 'text-zinc-500',
                         )}>
                           {info.count}
                         </span>
                       ) : null}
                     </div>
                     <div className={cx(
-                      'my-auto text-center text-[0.95rem] font-medium tracking-tight tabular-nums',
-                      val > 0
-                        ? 'text-[#38f29c]'
-                        : val < 0
-                          ? 'text-[#ff5c72]'
-                          : 'text-zinc-600/80',
+                      'my-auto text-center text-[1.1rem] font-medium tracking-tight tabular-nums',
+                      isBest
+                        ? 'font-semibold text-amber-300'
+                        : val > 0
+                          ? 'text-[#38f29c]'
+                          : val < 0
+                            ? 'text-[#ff5c72]'
+                            : 'text-zinc-600/80',
                     )}>
                       {info ? fmtVal(val, true) : fmtVal(0)}
                     </div>

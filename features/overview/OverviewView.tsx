@@ -133,7 +133,7 @@ export function OverviewView() {
             Paper Mode
             <span className={cx('relative h-5 w-9 rounded-full transition-colors', shadow ? 'bg-emerald-500' : 'bg-line2')}><span className={cx('absolute top-0.5 size-4 rounded-full bg-white transition-[left]', shadow ? 'left-[1.1rem]' : 'left-0.5')} /></span>
           </button>
-          <PnlCalendarButton closed={state.closed} defaultPaper={shadow} />
+          <PnlCalendarButton closed={state.closed} positions={state.positions} solUsd={px} defaultPaper={shadow} />
           <DateRangePicker value={dateRange} onChange={setDateRange} />
         </div>
       </div>
