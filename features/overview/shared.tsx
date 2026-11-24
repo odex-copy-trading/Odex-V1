@@ -34,10 +34,41 @@ export function RevertBar({ r, total, className }: { r: RevertBreakdown; total: 
   );
 }
 
-// Token avatar/banner: locked 68×68px rounded-square with yellow/gold border for both image & fallback.
-export function TokenAvatar({ symbol, image }: { symbol: string; image?: string }) {
-  const [imgFailed, setImgFailed] = useState(false);
-  const showImg = !!image && !imgFailed;
+function buildImageCandidates(image?: string, mint?: string): string[] {
+  const out: string[] = [];
+  const add = (u?: string) => {
+    if (!u) return;
+    const trimmed = u.trim();
+    if (/^https?:\/\//i.test(trimmed) && !out.includes(trimmed)) out.push(trimmed);
+  };
+  if (image) {
+    const raw = image.trim();
+    const ipfsMatch = raw.match(/^(?:ipfs:\/\/|https?:\/\/[^/]+\/ipfs\/)(.+)$/i);
+    if (ipfsMatch) {
+      const cidPath = ipfsMatch[1].replace(/^ipfs\//i, '');
+      add(`https://gateway.pinata.cloud/ipfs/${cidPath}`);
+      add(`https://ipfs.io/ipfs/${cidPath}`);
+      add(`https://dweb.link/ipfs/${cidPath}`);
+    } else {
+      add(raw);
+    }
+  }
+  if (mint && mint.length >= 32) {
+    add(`https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png`);
+    add(`https://images.pump.fun/coin-image/${mint}`);
+  }
+  return out;
+}
+
+// Token avatar/banner: locked 68×68px rounded-square with yellow/gold border and multi-CDN image fallback.
+export function TokenAvatar({ symbol, image, mint }: { symbol: string; image?: string; mint?: string }) {
+  const candidates = buildImageCandidates(image, mint);
+  const key = `${image ?? ''}|${mint ?? ''}`;
+  const [idx, setIdx] = useState(0);
+  useEffect(() => { setIdx(0); }, [key]);
+
+  const src = candidates[idx];
+  const showImg = !!src;
   return (
     <span
       style={{ width: 68, height: 68, borderRadius: 15 }}
@@ -50,7 +81,14 @@ export function TokenAvatar({ symbol, image }: { symbol: string; image?: string 
     >
       {showImg ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={image} alt="" loading="lazy" onError={() => setImgFailed(true)} style={{ width: 68, height: 68, objectFit: 'cover', display: 'block' }} />
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setIdx((n) => n + 1)}
+          style={{ width: 68, height: 68, objectFit: 'cover', display: 'block' }}
+        />
       ) : (
         <span aria-hidden>{(symbol[0] || '?').toUpperCase()}</span>
       )}
@@ -76,7 +114,7 @@ export function TokenCell({ symbol, badge, sub, mint, ts, image }: { symbol: str
   };
   return (
     <div className="flex min-w-0 items-center gap-3.5">
-      <TokenAvatar symbol={symbol} image={image} />
+      <TokenAvatar symbol={symbol} image={image} mint={mint} />
       <div className="min-w-0">
         <div className="flex items-center gap-1.5 text-[0.97rem] font-semibold leading-snug">
           <span className="truncate">${symbol}</span>
