@@ -756,6 +756,7 @@ export class SolanaLiveFeed {
 
     const ts = Date.now();
     const slot = msg.slotOverride || this.cp.currentSlot() || this.lastSlot;
+    if (msg.signature) this.cp.recordLaunchSig(msg.mint, msg.signature);
     const symbol = (msg.symbol || msg.mint.slice(0, 4)).trim().slice(0, 16);
     const sizeSol = typeof msg.solAmount === 'number' && Number.isFinite(msg.solAmount) ? +msg.solAmount.toFixed(4) : 0;
     const normImg = msg.image?.trim()

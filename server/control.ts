@@ -58,6 +58,7 @@ export class ControlPlane extends EventEmitter {
   private tripped = new Set<Breaker>();
   private lastEngineSlotAt = 0;
   private lastEngineBurstAt = 0;
+  private launchSigs = new Map<string, string>();
   readonly startedAt = Date.now();
 
   constructor(private db: Db, private secrets: SecretStore, private engine: EngineAdapter, seed?: { config: BotConfig; kols: Kol[] }, private cloud?: CloudSync) {
@@ -80,6 +81,14 @@ export class ControlPlane extends EventEmitter {
   get engineSource(): EngineSource { return this.rt ? this.engine.source : 'disconnected'; }
   get engineStatus(): EngineRuntime['engine']['status'] { return this.rt?.engine.status ?? 'PAUSED'; }
   currentSlot(): number { return Math.max(this.rt?.chain.slot ?? 0, this.liveChain.slot ?? 0); }
+  recordLaunchSig(mint: string, sig?: string) {
+    if (!mint || !sig) return;
+    this.launchSigs.set(mint, sig);
+    if (this.launchSigs.size > 1000) {
+      const first = this.launchSigs.keys().next().value;
+      if (first) this.launchSigs.delete(first);
+    }
+  }
 
   /** Estimates real Solana tx + priority + SWQoS lander tip + duplicate-revert fee in SOL from current Settings. */
   estimateExecutionFeeSol(): number {
@@ -390,21 +399,41 @@ export class ControlPlane extends EventEmitter {
       }
       if (buySlot === null) return;
 
-      // 2. Find exact on-chain launch slot for `mint` (walk up to 3 pages of 500 sigs; null delta if >1500 txs so never fake)
-      let before: string | undefined;
+      // 2. Find exact on-chain launch slot for `mint`.
+      // Fast path (1 tiny RPC call, immune to high tx volume): if we captured the exact create signature, query getSignatureStatuses!
       let launchSlot: number | null = null;
       let exactLaunch = false;
-      for (let page = 0; page < 3; page++) {
-        const params: Record<string, unknown> = { limit: 500 };
-        if (before) params.before = before;
-        const msigs = await rpc<Array<{ signature: string; slot: number }>>('getSignaturesForAddress', [mint, params]);
-        if (!msigs?.length) break;
-        launchSlot = msigs[msigs.length - 1].slot;
-        if (msigs.length < 500) {
+      const launchSig = this.launchSigs.get(mint);
+      if (launchSig) {
+        const st = await rpc<{ value?: Array<{ slot?: number } | null> }>('getSignatureStatuses', [
+          [launchSig],
+          { searchTransactionHistory: true },
+        ]);
+        const s0 = st?.value?.[0]?.slot;
+        if (typeof s0 === 'number' && s0 > 0) {
+          launchSlot = s0;
           exactLaunch = true;
-          break;
         }
-        before = msigs[msigs.length - 1].signature;
+      }
+      // Fallback: walk up to 5 pages of 1000 sigs (5,000 txs) with 1 retry on transient RPC 429/timeout
+      if (!exactLaunch) {
+        let before: string | undefined;
+        for (let page = 0; page < 5; page++) {
+          const params: Record<string, unknown> = { limit: 1000 };
+          if (before) params.before = before;
+          let msigs = await rpc<Array<{ signature: string; slot: number }>>('getSignaturesForAddress', [mint, params]);
+          if (!msigs) {
+            await new Promise((res) => setTimeout(res, 600));
+            msigs = await rpc<Array<{ signature: string; slot: number }>>('getSignaturesForAddress', [mint, params]);
+          }
+          if (!msigs?.length) break;
+          launchSlot = msigs[msigs.length - 1].slot;
+          if (msigs.length < 1000) {
+            exactLaunch = true;
+            break;
+          }
+          before = msigs[msigs.length - 1].signature;
+        }
       }
       const finalBuySlot = exactLaunch && launchSlot !== null && isPaper ? Math.max(buySlot, launchSlot) : buySlot;
       const slotDelta = exactLaunch && launchSlot !== null && finalBuySlot >= launchSlot ? finalBuySlot - launchSlot : null;
