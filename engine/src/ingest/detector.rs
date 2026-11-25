@@ -2,7 +2,8 @@
 //! 1. KOL Buy Detector (Pump.fun, PumpSwap, Raydium LaunchLab)
 //! 2. 0-Block Launch Detector (Pump.fun CreateV2 & Raydium LaunchLab Initialize)
 
-use std::sync::RwLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::state::{BalanceCache, WatchlistCache};
@@ -209,6 +210,8 @@ pub struct SignalDetector {
     watchlist: WatchlistCache,
     balances: BalanceCache,
     launch_filter: RwLock<LaunchFilterConfig>,
+    recent_symbols: Mutex<HashMap<String, u64>>,
+    creator_launches: Mutex<HashMap<PubkeyBytes, Vec<u64>>>,
 }
 
 impl SignalDetector {
@@ -221,7 +224,52 @@ impl SignalDetector {
             watchlist,
             balances,
             launch_filter: RwLock::new(launch_filter),
+            recent_symbols: Mutex::new(HashMap::new()),
+            creator_launches: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn is_serial_deployer(&self, creator: PubkeyBytes, now_us: u64) -> bool {
+        const ONE_HOUR_US: u64 = 3_600_000_000;
+        let Ok(mut map) = self.creator_launches.lock() else {
+            return false;
+        };
+        let entry = map.entry(creator).or_default();
+        entry.retain(|&t| now_us.saturating_sub(t) < ONE_HOUR_US);
+        entry.push(now_us);
+        let is_repeat = entry.len() >= 2;
+        if map.len() > 1_000 {
+            map.retain(|_, v| {
+                v.retain(|&t| now_us.saturating_sub(t) < ONE_HOUR_US);
+                !v.is_empty()
+            });
+        }
+        is_repeat
+    }
+
+    fn is_duplicate_symbol_clone(&self, symbol: &str, now_us: u64) -> bool {
+        const COOLDOWN_US: u64 = 900_000_000; // 15 minutes (1:1 with Paper Mode)
+        let norm: String = symbol
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_uppercase();
+        if norm.is_empty() {
+            return false;
+        }
+        let Ok(mut map) = self.recent_symbols.lock() else {
+            return false;
+        };
+        if let Some(&prev) = map.get(&norm) {
+            if now_us.saturating_sub(prev) < COOLDOWN_US {
+                return true;
+            }
+        }
+        map.insert(norm, now_us);
+        if map.len() > 500 {
+            map.retain(|_, &mut t| now_us.saturating_sub(t) < COOLDOWN_US);
+        }
+        false
     }
 
     pub fn update_launch_filter(&self, next: LaunchFilterConfig) {
@@ -296,10 +344,17 @@ impl SignalDetector {
 
             for ix in &tx.instructions {
                 if let Some(launch) = parse_launch_ix(ix) {
+                    // Track every creator launch (even small dev buys) to block serial deployers (>=2/hr).
+                    if self.is_serial_deployer(launch.creator, detected_at_us) {
+                        continue;
+                    }
                     if !self.matches_launch_filter(&launch, bundled_dev_buy, &filter) {
                         continue;
                     }
                     if launch.venue == Venue::PumpFun && bundled_buy_accounts.len() < 16 {
+                        continue;
+                    }
+                    if self.is_duplicate_symbol_clone(&launch.symbol, detected_at_us) {
                         continue;
                     }
                     let opportunity_key =
@@ -348,7 +403,9 @@ impl SignalDetector {
         {
             return false;
         }
-        if filter.require_metadata_uri && launch.uri.trim().is_empty() {
+        if filter.require_metadata_uri
+            && (launch.uri.trim().is_empty() || launch.name.trim().is_empty() || launch.symbol.trim().is_empty())
+        {
             return false;
         }
         let hay = format!("{} {}", launch.name, launch.symbol).to_ascii_lowercase();
@@ -495,5 +552,21 @@ mod tests {
             }
             _ => panic!("expected ZeroBlockLaunch"),
         }
+
+        // Duplicate symbol clone from a different creator within 15 min must be blocked.
+        let mut tx_clone = tx.clone();
+        tx_clone.signers = vec![[0x77; 32]];
+        tx_clone.instructions[0].accounts[7] = [0x77; 32];
+        assert!(detector.inspect_tx(&tx_clone).is_empty(), "duplicate symbol clone should be blocked");
+
+        // Serial deployer launching a different symbol within 60 min must be blocked.
+        let mut create_data2 = Vec::new();
+        create_data2.extend_from_slice(&DISC_PUMPFUN_CREATE_V2);
+        encode_borsh_str(&mut create_data2, "Second Coin");
+        encode_borsh_str(&mut create_data2, "SEC");
+        encode_borsh_str(&mut create_data2, "https://meta.example/sec.json");
+        let mut tx_serial = tx.clone();
+        tx_serial.instructions[0].data = create_data2;
+        assert!(detector.inspect_tx(&tx_serial).is_empty(), "serial deployer should be blocked");
     }
 }
