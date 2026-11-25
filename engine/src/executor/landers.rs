@@ -405,6 +405,10 @@ async fn submit_variant(
         .or_else(|| {
             if target_url.contains("0slot.trade") {
                 std::env::var("WHAL_ZEROSLOT_API_KEY").ok().filter(|s| !s.is_empty())
+            } else if target_url.contains("astralane.io") {
+                std::env::var("WHAL_ASTRALANE_API_KEY").ok().filter(|s| !s.is_empty())
+            } else if target_url.contains("nozomi.temporal.xyz") {
+                std::env::var("WHAL_NOZOMI_API_KEY").ok().filter(|s| !s.is_empty())
             } else {
                 None
             }
@@ -413,6 +417,11 @@ async fn submit_variant(
         if let Some(ref tok) = effective_tok {
             let sep = if target_url.contains('?') { '&' } else { '?' };
             target_url = format!("{target_url}{sep}api-key={tok}");
+        }
+    } else if target_url.contains("nozomi.temporal.xyz") && !target_url.contains("c=") {
+        if let Some(ref tok) = effective_tok {
+            let sep = if target_url.contains('?') { '&' } else { '?' };
+            target_url = format!("{target_url}{sep}c={tok}");
         }
     }
 
