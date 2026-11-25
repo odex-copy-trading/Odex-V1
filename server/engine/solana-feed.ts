@@ -355,7 +355,9 @@ export class SolanaLiveFeed {
         if (typeof subId !== 'number' || !val?.signature || val.err !== null) return;
         const logs = Array.isArray(val.logs) ? val.logs : [];
         if (subId === this.rpcPumpCreateSubId) {
-          if (logs.some((l) => l.includes('Instruction: Create') || l.includes('Instruction: CreateV2'))) {
+          // Only inspect Helius Create logs when PumpPortal WS is silent >5s so we never saturate Helius getTransaction.
+          const pumpSilent = this.pumpWs?.readyState !== WebSocket.OPEN || Date.now() - this.lastPumpMsgAt > 5_000;
+          if (pumpSilent && logs.some((l) => l.includes('Instruction: Create') || l.includes('Instruction: CreateV2'))) {
             if (!this.seenPumpCreateSigs.has(val.signature)) {
               this.seenPumpCreateSigs.add(val.signature);
               if (this.seenPumpCreateSigs.size > 500) {
@@ -967,8 +969,12 @@ export class SolanaLiveFeed {
         if (!curveB64) return null;
         const curveBuf = Buffer.from(curveB64, 'base64');
         if (curveBuf.length < 81) return null;
-        // If any mayhem/cashback/buyback tail flag is set, fall back to getTransaction so [17] buyback_fee_recipient is included.
-        if (curveBuf.length > 81 && curveBuf.subarray(81).some((b) => b !== 0)) return null;
+        // Only fall back to getTransaction if mayhem/cashback/buyback flag bytes are set (not timestamp/reserve bytes).
+        const hasSpecialFlags =
+          (curveBuf.length > 81 && curveBuf[81] !== 0) ||
+          (curveBuf.length > 82 && curveBuf[82] !== 0) ||
+          (curveBuf.length > 124 && curveBuf[124] !== 0);
+        if (hasSpecialFlags) return null;
         const creatorVault = deriveCreatorVault(curveBuf.subarray(49, 81));
         const assocCurve = deriveAta(p.bondingCurveKey, tokenProg, p.mint);
         if (!creatorVault || !assocCurve) return null;
@@ -1017,14 +1023,17 @@ export class SolanaLiveFeed {
       if (!dexAccounts) {
         let pumpIxAccounts: string[] | null = null;
         const waitsMs = [0, 200, 300, 400, 500, 600, 700];
-        for (const wait of waitsMs) {
+        for (let idx = 0; idx < waitsMs.length; idx++) {
+          const wait = waitsMs[idx];
           if (wait > 0) await new Promise((r) => setTimeout(r, wait));
           if (p.signature) {
             pumpIxAccounts = await fetchPumpBuyAccounts(p.signature);
             if (pumpIxAccounts) break;
-          } else {
+          }
+          if (!p.signature || idx >= 2) {
             const sigs = await fetchSigs();
             for (const sig of sigs.slice(0, 2)) {
+              if (sig === p.signature) continue;
               pumpIxAccounts = await fetchPumpBuyAccounts(sig);
               if (pumpIxAccounts) break;
             }
