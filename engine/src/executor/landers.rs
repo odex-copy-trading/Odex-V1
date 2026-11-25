@@ -230,25 +230,24 @@ impl LanderFanOut {
                 } else {
                     lander.tip_accounts[idx % lander.tip_accounts.len()]
                 };
-                // Two-Tier Slot-0 / Slot-1..4 burst structure:
-                // When fanout >= 2: idx 0 is Tier A (strict Slot +0 ONLY, max_tip_lamports);
-                // idx >= 1 is Tier B (Slot +1..+4 safety net, min_tip_lamports..mid).
-                let is_tier_a = lander.fanout >= 2 && idx == 0;
+                // Fhbh1D-style Slot-0 spray + optional Tier-B safety net:
+                // - When buy_slot_ttl == 0: 100% of variants are strict Slot +0 ONLY (aborts in 544 CU / 0 SOL tip if late).
+                // - When buy_slot_ttl > 0 & fanout >= 2: ALL 0..(fanout-1) variants are Tier A (Slot +0, max_tip_lamports)
+                //   and only the final variant (idx == fanout - 1) is Tier B (Slot +1..+ttl, min_tip_lamports).
+                let is_tier_a = buy_slot_ttl == 0 || (lander.fanout >= 2 && idx + 1 < lander.fanout);
                 let variant_ttl = if is_tier_a { 0 } else { buy_slot_ttl.clamp(1, 4) };
                 let tip_lamports = if is_tier_a {
                     lander.max_tip_lamports
-                } else if lander.fanout > 2 {
-                    let span = lander.max_tip_lamports.saturating_sub(lander.min_tip_lamports);
-                    lander.min_tip_lamports.saturating_add((span * (idx - 1) as u64) / (lander.fanout as u64 - 1))
                 } else {
                     lander.min_tip_lamports
                 };
 
-                // Vary priority fee slightly per variant (Tier A highest) so signatures are guaranteed distinct.
+                // Tiny 100-lamport priority fee jitter per variant (Fhbh1D pattern: ~0.000007 SOL failed tx cost)
+                // so every signature is guaranteed distinct while 99.9% of the bribe stays in the conditional tip.
                 let mut v1_cfg = base_v1_cfg;
                 v1_cfg.priority_fee_lamports = v1_cfg
                     .priority_fee_lamports
-                    .saturating_add(if is_tier_a { 5_000 } else { (idx as u64) * 1_000 });
+                    .saturating_add((idx as u64) * 100);
 
                 let is_token_2022_mint = trigger.dex_accounts.contains(&TOKEN_2022_PROGRAM_ID);
                 let use_standalone_guard_for_pumpswap = trigger.venue == Venue::PumpSwap;
