@@ -193,10 +193,21 @@ export class ControlPlane extends EventEmitter {
       case 'tx_landed':
         if (e.signature) this.db.raw.prepare('UPDATE bursts SET winning_sig = ? WHERE id = ?').run(e.signature, e.burstId);
         break;
-      case 'position_updated':
-        r.positions = e.positions;
+      case 'position_updated': {
+        const paperPositions = r.positions.filter((p) => p.id.startsWith('paper_'));
+        const enriched = e.positions.map((p) => {
+          const match = r.feed.find((f) => f.mint === p.mint && f.symbol && f.symbol !== 'TOKEN' && !p.mint.startsWith(f.symbol));
+          return {
+            ...p,
+            symbol: match?.symbol ?? p.symbol,
+            image: p.image ?? match?.image,
+          };
+        });
+        r.positions = [...enriched, ...paperPositions];
         if (e.closed) { r.closed = [e.closed, ...r.closed].slice(0, 5000); this.db.insertClosed(e.closed); }
-        break;
+        this.publish({ ...e, positions: r.positions });
+        return;
+      }
       case 'sweep_executed': this.db.upsertSweep(e.sweep); break;
       case 'treasury_updated':
         r.sweeps = e.sweeps; r.inventory = e.inventory; r.rent = e.rent;

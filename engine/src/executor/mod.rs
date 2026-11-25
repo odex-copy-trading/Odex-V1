@@ -179,16 +179,18 @@ impl ExecutorService {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let burst_id = format!("ev_{:x}_{}", trigger.trigger_slot, ts & 0xFFFF);
-        let (kind_str, kol_id, size_sol) = match &trigger.kind {
+        let (kind_str, kol_id, size_sol, trigger_symbol) = match &trigger.kind {
             TriggerKind::KolBuy { kol_id, buy_size_lamports, .. } => (
                 "kol_buy",
                 Some(kol_id.clone()),
                 *buy_size_lamports as f64 / 1_000_000_000.0,
+                String::new(),
             ),
-            TriggerKind::ZeroBlockLaunch { dev_buy_lamports, .. } => (
+            TriggerKind::ZeroBlockLaunch { dev_buy_lamports, symbol, .. } => (
                 "launch",
                 None,
                 *dev_buy_lamports as f64 / 1_000_000_000.0,
+                symbol.clone(),
             ),
         };
 
@@ -238,9 +240,14 @@ impl ExecutorService {
                     .into_iter()
                     .map(|p| {
                         let m = pubkey_to_bs58(&p.mint);
+                        let sym = if p.mint == trigger.mint && !trigger_symbol.is_empty() {
+                            trigger_symbol.clone()
+                        } else {
+                            m[..m.len().min(5)].to_string()
+                        };
                         telemetry::LivePositionPayload {
                             id: format!("live_{}", &m[..m.len().min(12)]),
-                            symbol: m[..m.len().min(5)].to_string(),
+                            symbol: sym,
                             mint: m,
                             venue: p.venue,
                             kol_id: kol_id.clone(),
@@ -313,7 +320,12 @@ impl ExecutorService {
                 kind: kind_str,
                 kol_id,
                 mint: pubkey_to_bs58(&trigger.mint),
-                symbol: "TOKEN".into(),
+                symbol: if trigger_symbol.is_empty() {
+                    let m = pubkey_to_bs58(&trigger.mint);
+                    m[..m.len().min(5)].to_string()
+                } else {
+                    trigger_symbol.clone()
+                },
                 venue: trigger.venue,
                 size_sol,
                 fanout: summary.total_sent,

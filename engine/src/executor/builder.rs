@@ -366,7 +366,9 @@ impl TxBuilder {
                 *balance_threshold,
                 *is_spl_quote,
             ),
-            TriggerKind::ZeroBlockLaunch { .. } => (1_500_000_000, 85_000_000_000, None, 0, false),
+            TriggerKind::ZeroBlockLaunch { dev_buy_lamports, .. } => {
+                ((*dev_buy_lamports).clamp(10_000_000, 50_000_000_000), 85_000_000_000, None, 0, false)
+            }
         };
 
         if is_generic_quote {
@@ -489,9 +491,16 @@ impl TxBuilder {
                 Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => self.programs.launchlab_program,
             };
             let mut buy_data = Vec::with_capacity(24);
-            buy_data.extend_from_slice(&[0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]);
-            buy_data.extend_from_slice(&p.min_tokens_out.max(1).to_le_bytes());
-            buy_data.extend_from_slice(&buy_size.to_le_bytes());
+            if trigger.venue == Venue::PumpFun {
+                // Pump.fun `buy_exact_sol_in(spendable_sol_in, min_tokens_out)` — spends exact configured buy_size SOL.
+                buy_data.extend_from_slice(&[0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f]);
+                buy_data.extend_from_slice(&buy_size.to_le_bytes());
+                buy_data.extend_from_slice(&p.min_tokens_out.max(1).to_le_bytes());
+            } else {
+                buy_data.extend_from_slice(&[0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea]);
+                buy_data.extend_from_slice(&p.min_tokens_out.max(1).to_le_bytes());
+                buy_data.extend_from_slice(&buy_size.to_le_bytes());
+            }
             let cpi_accs = build_venue_cpi_accounts(
                 trigger.venue,
                 &trigger.dex_accounts,

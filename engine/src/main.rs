@@ -541,12 +541,11 @@ async fn connect_bridge_once(
                                                     .and_then(|v| v.as_str())
                                                     .and_then(|s| pubkey_from_bs58(s).ok())
                                                     .unwrap_or([0u8; 32]);
-                                                let dev_buy_sol = t.get("devBuySol").and_then(|v| v.as_f64()).unwrap_or(0.5);
                                                 (
                                                     StrategyId::PumpFunCreateV2Snipe,
                                                     TriggerKind::ZeroBlockLaunch {
                                                         creator,
-                                                        dev_buy_lamports: (dev_buy_sol * 1_000_000_000.0) as u64,
+                                                        dev_buy_lamports: (buy_size_sol * 1_000_000_000.0) as u64,
                                                         name: t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                                         symbol: t.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                                         uri: t.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -803,6 +802,7 @@ async fn main() {
         let exit_exec = executor.clone();
         let exit_hot = hot_wallet_pubkey;
         let sell_router_prog = env_pubkey("WHAL_SELL_ROUTER_PROGRAM_ID");
+        let exit_out = outbound_tx.clone();
         tokio::spawn(async move {
             let http = reqwest::Client::builder()
                 .timeout(Duration::from_secs(2))
@@ -819,15 +819,16 @@ async fn main() {
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
-                let curve_keys: Vec<String> = open
-                    .iter()
-                    .map(|p| bs58::encode(&p.pool_or_curve).into_string())
-                    .collect();
+                let mut keys: Vec<String> = Vec::with_capacity(open.len() * 2);
+                for p in &open {
+                    keys.push(bs58::encode(&p.pool_or_curve).into_string());
+                    keys.push(bs58::encode(&p.bot_token_account).into_string());
+                }
                 let req_body = json!({
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "getMultipleAccounts",
-                    "params": [curve_keys, { "encoding": "base64", "commitment": "processed" }]
+                    "params": [keys, { "encoding": "base64", "commitment": "processed" }]
                 });
                 let vals = match http.post(&exit_rpc).json(&req_body).send().await {
                     Ok(resp) => resp
@@ -838,9 +839,10 @@ async fn main() {
                         .unwrap_or_default(),
                     Err(_) => continue,
                 };
+                let mut live_ui_positions: Vec<Value> = Vec::with_capacity(open.len());
                 for (i, pos) in open.iter().enumerate() {
                     let b64 = vals
-                        .get(i)
+                        .get(i * 2)
                         .and_then(|v| v.pointer("/data/0"))
                         .and_then(|v| v.as_str());
                     let (price_sol, v_sol_lamports) = match b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()) {
@@ -850,51 +852,88 @@ async fn main() {
                             let px = if v_tokens > 0.0 { (v_sol as f64 / 1e9) / v_tokens } else { 0.0 };
                             (px, v_sol)
                         }
-                        _ => (pos.entry_price_sol, 30_000_000_000),
+                        _ => (0.0, 30_000_000_000),
                     };
-                    if let Some(order) = exit_mgr.on_price_update(&pos.mint, price_sol, v_sol_lamports, now_secs) {
-                        info!(
-                            mint = %bs58::encode(&pos.mint).into_string(),
-                            sell_pct = order.sell_pct,
-                            reason = order.reason,
-                            "ExitEngine triggered automated live sell"
-                        );
-                        let target_dex = match pos.venue {
-                            Venue::PumpFun => whal_engine::ingest::detector::PUMPFUN_PROGRAM_ID,
-                            Venue::PumpSwap => whal_engine::ingest::detector::PUMPSWAP_PROGRAM_ID,
-                            Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => whal_engine::ingest::detector::LAUNCHLAB_PROGRAM_ID,
-                        };
-                        let tok_prog = if pos.is_token_2022 { TOKEN_2022_PROGRAM_ID } else { SPL_TOKEN_PROGRAM_ID };
-                        let cpi_accounts = build_venue_cpi_accounts(
-                            pos.venue,
-                            &pos.dex_accounts,
-                            exit_hot,
-                            pos.bot_token_account,
-                            None,
-                            tok_prog,
-                        );
-                        let params = SellTxParams {
-                            sell_router_program: sell_router_prog,
-                            target_dex_program: target_dex,
-                            venue: pos.venue,
-                            hot_wallet: exit_hot,
-                            bot_token_account: pos.bot_token_account,
-                            pool_or_curve: pos.pool_or_curve,
-                            is_token_2022: pos.is_token_2022,
-                            pre_balance: pos.token_balance,
-                            sell_pct: order.sell_pct,
-                            min_quote_out: 1,
-                            min_liquidity_floor_lamports: 5_000_000_000,
-                            current_slot: pos.opened_slot,
-                            close_on_full_exit: order.close_account,
-                            cpi_accounts,
-                        };
-                        let _ = exit_exec.execute_sell(params).await;
-                        if order.close_account || order.sell_pct >= 100 {
-                            exit_mgr.remove_position(&pos.mint);
+                    let tok_b64 = vals
+                        .get(i * 2 + 1)
+                        .and_then(|v| v.pointer("/data/0"))
+                        .and_then(|v| v.as_str());
+                    let raw_tok_bal: u64 = match tok_b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()) {
+                        Some(buf) if buf.len() >= 72 => u64::from_le_bytes(buf[64..72].try_into().unwrap_or([0; 8])),
+                        _ => pos.token_balance,
+                    };
+                    let ui_tokens = if raw_tok_bal > 0 { raw_tok_bal as f64 / 1e6 } else { 1.0 };
+                    let ui_price = if raw_tok_bal > 0 && price_sol > 0.0 { price_sol } else { pos.entry_price_sol };
+                    let mut closed_now = false;
+                    if raw_tok_bal > 0 && price_sol > 0.0 {
+                        if let Some(order) = exit_mgr.on_price_update(&pos.mint, price_sol * ui_tokens, v_sol_lamports, now_secs) {
+                            info!(
+                                mint = %bs58::encode(&pos.mint).into_string(),
+                                sell_pct = order.sell_pct,
+                                reason = order.reason,
+                                "ExitEngine triggered automated live sell"
+                            );
+                            let target_dex = match pos.venue {
+                                Venue::PumpFun => whal_engine::ingest::detector::PUMPFUN_PROGRAM_ID,
+                                Venue::PumpSwap => whal_engine::ingest::detector::PUMPSWAP_PROGRAM_ID,
+                                Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => whal_engine::ingest::detector::LAUNCHLAB_PROGRAM_ID,
+                            };
+                            let tok_prog = if pos.is_token_2022 { TOKEN_2022_PROGRAM_ID } else { SPL_TOKEN_PROGRAM_ID };
+                            let cpi_accounts = build_venue_cpi_accounts(
+                                pos.venue,
+                                &pos.dex_accounts,
+                                exit_hot,
+                                pos.bot_token_account,
+                                None,
+                                tok_prog,
+                            );
+                            let params = SellTxParams {
+                                sell_router_program: sell_router_prog,
+                                target_dex_program: target_dex,
+                                venue: pos.venue,
+                                hot_wallet: exit_hot,
+                                bot_token_account: pos.bot_token_account,
+                                pool_or_curve: pos.pool_or_curve,
+                                is_token_2022: pos.is_token_2022,
+                                pre_balance: raw_tok_bal,
+                                sell_pct: order.sell_pct,
+                                min_quote_out: 1,
+                                min_liquidity_floor_lamports: 5_000_000_000,
+                                current_slot: pos.opened_slot,
+                                close_on_full_exit: order.close_account,
+                                cpi_accounts,
+                            };
+                            let _ = exit_exec.execute_sell(params).await;
+                            if order.close_account || order.sell_pct >= 100 {
+                                exit_mgr.remove_position(&pos.mint);
+                                closed_now = true;
+                            }
                         }
                     }
+                    if !closed_now {
+                        let m = bs58::encode(&pos.mint).into_string();
+                        live_ui_positions.push(json!({
+                            "id": format!("live_{}", &m[..m.len().min(12)]),
+                            "mint": m,
+                            "symbol": &m[..m.len().min(5)],
+                            "venue": pos.venue,
+                            "kolId": Value::Null,
+                            "openedAt": pos.opened_at_secs * 1_000,
+                            "openedSlot": pos.opened_slot,
+                            "entrySol": pos.entry_price_sol,
+                            "initialTokens": ui_tokens,
+                            "tokens": ui_tokens,
+                            "entryPrice": if ui_tokens > 0.0 { pos.entry_price_sol / ui_tokens } else { pos.entry_price_sol },
+                            "price": ui_price,
+                            "realizedSol": 0.0,
+                            "pendingSell": Value::Null
+                        }));
+                    }
                 }
+                let _ = exit_out.send(json!({
+                    "type": "event",
+                    "event": { "type": "position_updated", "ts": now_ms(), "positions": live_ui_positions }
+                }));
             }
         });
     }
