@@ -118,6 +118,7 @@ export class SolanaLiveFeed {
   private slotTimer: ReturnType<typeof setTimeout> | null = null;
   private pumpTimer: ReturnType<typeof setTimeout> | null = null;
   private priceTimer: ReturnType<typeof setInterval> | null = null;
+  private balTimer: ReturnType<typeof setInterval> | null = null;
   private paperTimer: ReturnType<typeof setInterval> | null = null;
   private paperPriceTimer: ReturnType<typeof setInterval> | null = null;
   private curvePriceTimer: ReturnType<typeof setInterval> | null = null;
@@ -155,6 +156,11 @@ export class SolanaLiveFeed {
     this.connectPumpStream();
     this.priceTimer = setInterval(() => void this.refreshMarketAndBalance(), 30_000);
     this.priceTimer.unref();
+    // Fast 3s on-chain SOL balance refresh while RUNNING so Total balance never double-counts spent SOL after buys/sells
+    this.balTimer = setInterval(() => {
+      if (this.cp.engineStatus === 'RUNNING') void this.refreshSolBalanceFast();
+    }, 3_000);
+    this.balTimer.unref();
     this.paperTimer = setInterval(() => this.sweepExpiredPaperPositions(), 2_000);
     this.paperTimer.unref();
     // Sub-second on-chain Pump.fun bonding-curve price poller (800ms, processed commitment)
@@ -184,6 +190,7 @@ export class SolanaLiveFeed {
     if (this.slotTimer) clearTimeout(this.slotTimer);
     if (this.pumpTimer) clearTimeout(this.pumpTimer);
     if (this.priceTimer) clearInterval(this.priceTimer);
+    if (this.balTimer) clearInterval(this.balTimer);
     if (this.paperTimer) clearInterval(this.paperTimer);
     if (this.curvePriceTimer) clearInterval(this.curvePriceTimer);
     if (this.paperPriceTimer) clearInterval(this.paperPriceTimer);
@@ -1404,6 +1411,26 @@ export class SolanaLiveFeed {
         this.closePaperPosition(mint, 'Moonbag max hold (26m)');
       }
     }
+  }
+
+  private async refreshSolBalanceFast() {
+    const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
+    if (!hotWallet) return;
+    try {
+      const r = await fetch(this.endpoints.httpUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [hotWallet, { commitment: 'processed' }] }),
+      });
+      if (!r.ok) return;
+      const j = await r.json() as { result?: { value?: number } };
+      if (typeof j.result?.value === 'number') {
+        const nextSol = j.result.value / 1e9;
+        if (Math.abs(nextSol - this.solBalance) > 1e-6) {
+          this.solBalance = nextSol;
+        }
+      }
+    } catch { /* ignore */ }
   }
 
   private async refreshMarketAndBalance() {

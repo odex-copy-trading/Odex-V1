@@ -194,18 +194,51 @@ export class ControlPlane extends EventEmitter {
         if (e.signature) this.db.raw.prepare('UPDATE bursts SET winning_sig = ? WHERE id = ?').run(e.signature, e.burstId);
         break;
       case 'position_updated': {
+        const prevLive = r.positions.filter((p) => !p.id.startsWith('paper_'));
         const paperPositions = r.positions.filter((p) => p.id.startsWith('paper_'));
         const enriched = e.positions.map((p) => {
           const match = r.feed.find((f) => f.mint === p.mint && f.symbol && f.symbol !== 'TOKEN' && !p.mint.startsWith(f.symbol));
+          const prev = prevLive.find((x) => x.mint === p.mint);
           return {
             ...p,
-            symbol: match?.symbol ?? p.symbol,
-            image: p.image ?? match?.image,
+            symbol: match?.symbol ?? prev?.symbol ?? p.symbol,
+            image: p.image ?? prev?.image ?? match?.image,
           };
         });
+        // Detect real live positions that just closed on-chain so Closed, Win Rate, Realized PnL & PnL Calendar update!
+        let closedRec = e.closed;
+        if (!closedRec) {
+          const nextMints = new Set(enriched.map((p) => p.mint));
+          for (const prev of prevLive) {
+            if (!nextMints.has(prev.mint)) {
+              const proceedsSol = +(prev.tokens * prev.price + (prev.proceedsSol ?? 0)).toFixed(6);
+              const cl: ClosedPosition = {
+                id: `cl_live_${prev.mint.slice(0, 10)}_${Date.now().toString(36)}`,
+                mint: prev.mint,
+                symbol: prev.symbol,
+                image: prev.image,
+                venue: prev.venue,
+                kolId: prev.kolId,
+                openedAt: prev.openedAt,
+                closedAt: Date.now(),
+                entrySol: prev.entrySol,
+                proceedsSol,
+                solUsd: r.balances.solUsd || 70,
+                exitReason: 'Live exit',
+              };
+              r.closed = [cl, ...r.closed].slice(0, 5000);
+              this.db.insertClosed(cl);
+              this.cloud?.syncClosed(cl);
+              this.recordPaperKolOutcome(cl);
+              closedRec = cl;
+            }
+          }
+        } else {
+          r.closed = [closedRec, ...r.closed].slice(0, 5000);
+          this.db.insertClosed(closedRec);
+        }
         r.positions = [...enriched, ...paperPositions];
-        if (e.closed) { r.closed = [e.closed, ...r.closed].slice(0, 5000); this.db.insertClosed(e.closed); }
-        this.publish({ ...e, positions: r.positions });
+        this.publish({ ...e, positions: r.positions, closed: closedRec });
         return;
       }
       case 'sweep_executed': this.db.upsertSweep(e.sweep); break;
