@@ -165,8 +165,8 @@ export function SettingsView() {
           </div>
           <div className="flex flex-wrap gap-2.5">
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) doImport(f); e.target.value = ''; }} />
-            <button type="button" onClick={() => fileRef.current?.click()} className="inline-flex h-10 items-center gap-2 rounded-[0.75rem] border border-line bg-card px-4 text-[0.95rem] font-medium hover:bg-raised"><Upload className="size-4" aria-hidden />Import JSON</button>
-            <button type="button" onClick={doExport} className="inline-flex h-10 items-center gap-2 rounded-[0.75rem] border border-line bg-card px-4 text-[0.95rem] font-medium hover:bg-raised"><Download className="size-4" aria-hidden />Export JSON</button>
+            <button type="button" onClick={() => fileRef.current?.click()} className="inline-flex h-9 items-center gap-1.5 rounded-[0.68rem] border border-line bg-card px-3.5 text-[0.855rem] font-medium hover:bg-raised"><Upload className="size-3.5" aria-hidden />Import JSON</button>
+            <button type="button" onClick={doExport} className="inline-flex h-9 items-center gap-1.5 rounded-[0.68rem] border border-line bg-card px-3.5 text-[0.855rem] font-medium hover:bg-raised"><Download className="size-3.5" aria-hidden />Export JSON</button>
           </div>
         </div>
 
