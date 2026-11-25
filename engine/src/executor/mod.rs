@@ -117,8 +117,13 @@ impl ExecutorService {
                     .unwrap_or_default();
                 for url in urls {
                     let c = client.clone();
+                    let ping_url = if url.contains("blockrazor.xyz") {
+                        url.replace("/sendTransaction", "/health")
+                    } else {
+                        url
+                    };
                     tokio::spawn(async move {
-                        let _ = c.get(&url).send().await;
+                        let _ = c.get(&ping_url).send().await;
                     });
                 }
             }
@@ -232,7 +237,14 @@ impl ExecutorService {
             self.recent_buy_mints.retain(|_, &mut t| now_ms.saturating_sub(t) < 60_000);
         }
         if let Some(exits) = &self.exit_engine {
-            if exits.list_positions().len() >= 5 || exits.get_position(&trigger.mint).is_some() {
+            // Only count on-chain confirmed positions (`token_balance > 0`) toward the max-5 cap
+            // so strict Slot-0 Custom(6001) reverts never lock out subsequent launches.
+            let confirmed_open = exits
+                .list_positions()
+                .iter()
+                .filter(|p| p.token_balance > 0)
+                .count();
+            if confirmed_open >= 5 || exits.get_position(&trigger.mint).is_some() {
                 return BurstDispatchSummary {
                     slot: trigger.trigger_slot,
                     total_sent: 0,
