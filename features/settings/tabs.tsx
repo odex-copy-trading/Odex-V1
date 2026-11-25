@@ -307,14 +307,14 @@ export function SecurityTab() {
         <div className="rounded-xl border border-line bg-card px-4 py-3">
           <div className="text-xs text-muted">Operator authentication</div>
           <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-fg">
-            scrypt token + JWT <Badge tone="ok">Active</Badge>
+            scrypt token + JWT <span className="text-xs font-medium text-emerald-400">Active</span>
           </div>
           <p className="mt-1 text-xs text-muted">Rate-limited login with revocable 12h session tokens.</p>
         </div>
         <div className="rounded-xl border border-line bg-card px-4 py-3">
           <div className="text-xs text-muted">Encrypted secrets vault</div>
           <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-fg">
-            {setSecretCount} secret{setSecretCount === 1 ? '' : 's'} stored <Badge tone="ok">Encrypted</Badge>
+            {setSecretCount} secret{setSecretCount === 1 ? '' : 's'} stored <span className="text-xs font-medium text-emerald-400">Encrypted</span>
           </div>
           <p className="mt-1 text-xs text-muted">Write-only at rest (ChaCha20-Poly1305), never returned to the browser.</p>
         </div>
