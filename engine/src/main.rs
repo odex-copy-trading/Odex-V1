@@ -940,6 +940,7 @@ async fn main() {
         let exit_rpc = rpc_url.clone();
         let exit_mgr = exit_engine.clone();
         let exit_exec = executor.clone();
+        let exit_shred = ingest.shredstream.clone();
         let exit_hot = hot_wallet_pubkey;
         let sell_router_prog = env_pubkey("WHAL_SELL_ROUTER_PROGRAM_ID");
         let exit_out = outbound_tx.clone();
@@ -1067,7 +1068,7 @@ async fn main() {
                                 sell_pct: order.sell_pct,
                                 min_quote_out: 0,
                                 min_liquidity_floor_lamports: 0,
-                                current_slot: pos.opened_slot,
+                                current_slot: exit_shred.latest_slot(),
                                 close_on_full_exit: order.close_account,
                                 cpi_accounts,
                             };

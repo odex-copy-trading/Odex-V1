@@ -94,6 +94,12 @@ pub fn build_protected_sell_instructions(p: &SellTxParams) -> Vec<InstructionSpe
                 ],
                 data: vec![TOKEN_IX_CLOSE_ACCOUNT],
             });
+        } else if p.sell_pct < 100 && p.current_slot > 0 {
+            // Partial TP1 / TWAP drip sells: enforce Lighthouse AssertSysvarClock (slot <= send_slot + 8)
+            // so delayed partial sells never fill late into a dip. 100% SL/panic exits remain unrestricted.
+            ixs.push(assert_clock_slot_lte(
+                p.current_slot.saturating_add(DEFAULT_POST_SELL_SLOT_TTL),
+            ));
         }
         return ixs;
     }

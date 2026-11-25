@@ -19,14 +19,14 @@ pub const LIGHTHOUSE_PROGRAM_ID: PubkeyBytes = [
 /// Lighthouse custom error code on assertion failure (`AssertionFailed`).
 pub const LIGHTHOUSE_ERR_ASSERTION_FAILED: u32 = 6011;
 
-/// Lighthouse instruction discriminators.
+/// Lighthouse instruction discriminators (verified against Jac0xb/lighthouse).
 pub const IX_ASSERT_ACCOUNT_DATA: u8 = 2;
-pub const IX_ASSERT_CLOCK_SYSVAR: u8 = 12;
+pub const IX_ASSERT_CLOCK_SYSVAR: u8 = 15;
 
 /// Lighthouse `DataValueAssertion::U64` + `IntegerOperator` tags.
 pub const DATA_TYPE_U64: u8 = 5;
 pub const OP_GREATER_THAN: u8 = 2;
-pub const OP_GREATER_THAN_OR_EQUAL: u8 = 3;
+pub const OP_GREATER_THAN_OR_EQUAL: u8 = 4;
 pub const OP_LESS_THAN_OR_EQUAL: u8 = 5;
 
 /// Account byte offsets.

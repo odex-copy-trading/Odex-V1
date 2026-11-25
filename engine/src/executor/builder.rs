@@ -268,7 +268,7 @@ impl TxBuilder {
             .map(|v| matches!(v.trim(), "1" | "true" | "TRUE"))
             .unwrap_or(false);
 
-        // ix 1: Program #1 (whal-dedupe CheckAndLock: [0x01 | opportunity_key(32) | max_slot(8)])
+        // ix 1: Slot-TTL guard BEFORE swap & tip so late txs abort early (~2.4k CU) and pay ZERO SWQoS tip.
         if !direct_native_dex {
             let max_slot = trigger.trigger_slot.saturating_add(p.buy_slot_ttl);
             let mut dedupe_data = Vec::with_capacity(41);
@@ -284,6 +284,15 @@ impl TxBuilder {
                 ],
                 data: dedupe_data,
             });
+        } else if trigger.trigger_slot > 0 {
+            // Direct-native mode: enforce on-chain Lighthouse AssertSysvarClock (disc=15, op=5 [<=]).
+            // KOL backruns: strict +1 slot cap; 0-block launches: +4..+7 slot cap (default +4).
+            let ttl = match trigger.kind {
+                TriggerKind::KolBuy { .. } => 1,
+                TriggerKind::ZeroBlockLaunch { .. } => p.buy_slot_ttl.clamp(4, 7),
+            };
+            let max_slot = trigger.trigger_slot.saturating_add(ttl);
+            ixs.push(crate::exits::assert_clock_slot_lte(max_slot));
         }
 
         // ix 2: ComputeBudget (always included so priority fee & CU limit are never dropped on wire)
