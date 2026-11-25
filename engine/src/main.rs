@@ -602,27 +602,88 @@ async fn connect_bridge_once(
                                                 None,
                                                 token_prog,
                                             );
-                                            let params = SellTxParams {
-                                                sell_router_program: progs.sell_router_program,
-                                                target_dex_program: target_dex,
-                                                venue: pos.venue,
-                                                hot_wallet,
-                                                bot_token_account: pos.bot_token_account,
-                                                pool_or_curve: pos.pool_or_curve,
-                                                is_token_2022: pos.is_token_2022,
-                                                pre_balance: pos.token_balance,
-                                                sell_pct: pct,
-                                                min_quote_out: 1,
-                                                min_liquidity_floor_lamports: 0,
-                                                current_slot: pos.opened_slot,
-                                                close_on_full_exit: close_on_full,
-                                                cpi_accounts,
-                                            };
                                             let exec = ctx.executor.clone();
                                             let exits = ctx.exit_engine.clone();
+                                            let rpc_url = ctx.rpc_url.clone();
+                                            let ata_b58 = bs58::encode(&pos.bot_token_account).into_string();
+                                            let mint_log = mint_str.to_string();
                                             tokio::spawn(async move {
-                                                let summary = exec.execute_sell(params).await;
-                                                if pct >= 100 && summary.winner.is_some() {
+                                                let http = reqwest::Client::builder()
+                                                    .timeout(Duration::from_secs(3))
+                                                    .build()
+                                                    .unwrap_or_default();
+                                                let fetch_bal = || {
+                                                    let http = http.clone();
+                                                    let rpc_url = rpc_url.clone();
+                                                    let ata_b58 = ata_b58.clone();
+                                                    async move {
+                                                        let body = json!({
+                                                            "jsonrpc": "2.0",
+                                                            "id": 1,
+                                                            "method": "getAccountInfo",
+                                                            "params": [ata_b58, { "encoding": "base64", "commitment": "processed" }]
+                                                        });
+                                                        let resp = http.post(&rpc_url).json(&body).send().await.ok()?;
+                                                        let val = resp.json::<Value>().await.ok()?;
+                                                        let acc = val.pointer("/result/value")?;
+                                                        if acc.is_null() {
+                                                            return Some(0);
+                                                        }
+                                                        let s = acc.pointer("/data/0")?.as_str()?;
+                                                        let buf = base64::engine::general_purpose::STANDARD.decode(s).ok()?;
+                                                        if buf.len() >= 72 {
+                                                            Some(u64::from_le_bytes(buf[64..72].try_into().unwrap_or([0; 8])))
+                                                        } else {
+                                                            Some(0)
+                                                        }
+                                                    }
+                                                };
+
+                                                // Force-sell loop: for 100% panic sell, re-check live on-chain balance and retry
+                                                // up to 4 times with 0 slippage floor until raw_tok_bal == 0 is confirmed on-chain!
+                                                let max_attempts: usize = if pct >= 100 { 4 } else { 1 };
+                                                for attempt in 0..max_attempts {
+                                                    let raw_tok_bal = match fetch_bal().await {
+                                                        Some(b) => b,
+                                                        None => pos.token_balance,
+                                                    };
+                                                    if raw_tok_bal == 0 {
+                                                        info!(mint = %mint_log, attempt, "Force sell confirmed 0 tokens remaining on-chain");
+                                                        if pct >= 100 {
+                                                            exits.remove_position(&mint_pk);
+                                                        }
+                                                        return;
+                                                    }
+                                                    info!(
+                                                        mint = %mint_log,
+                                                        pct,
+                                                        raw_tok_bal,
+                                                        attempt = attempt + 1,
+                                                        max_attempts,
+                                                        "Executing forced manual sell (min_quote_out=0)"
+                                                    );
+                                                    let params = SellTxParams {
+                                                        sell_router_program: progs.sell_router_program,
+                                                        target_dex_program: target_dex,
+                                                        venue: pos.venue,
+                                                        hot_wallet,
+                                                        bot_token_account: pos.bot_token_account,
+                                                        pool_or_curve: pos.pool_or_curve,
+                                                        is_token_2022: pos.is_token_2022,
+                                                        pre_balance: raw_tok_bal,
+                                                        sell_pct: pct,
+                                                        min_quote_out: 0,
+                                                        min_liquidity_floor_lamports: 0,
+                                                        current_slot: pos.opened_slot,
+                                                        close_on_full_exit: close_on_full,
+                                                        cpi_accounts: cpi_accounts.clone(),
+                                                    };
+                                                    let _ = exec.execute_sell(params).await;
+                                                    if pct >= 100 {
+                                                        tokio::time::sleep(Duration::from_millis(1_500)).await;
+                                                    }
+                                                }
+                                                if pct >= 100 && fetch_bal().await == Some(0) {
                                                     exits.remove_position(&mint_pk);
                                                 }
                                             });
