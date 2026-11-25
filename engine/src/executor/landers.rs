@@ -387,17 +387,27 @@ async fn submit_variant(
         "Submitting signed SWQoS variant"
     );
 
-    let payload = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": v.variant_idx + 1,
-        "method": "sendTransaction",
-        "params": [
-            encoded_tx,
-            { "encoding": "base64", "skipPreflight": true, "maxRetries": 0 }
-        ]
-    });
-
     let mut target_url = v.endpoint_url.clone();
+    let is_blockrazor = target_url.contains("blockrazor.xyz");
+
+    let payload = if is_blockrazor {
+        serde_json::json!({
+            "transaction": encoded_tx,
+            "mode": "fast",
+            "revertProtection": false
+        })
+    } else {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": v.variant_idx + 1,
+            "method": "sendTransaction",
+            "params": [
+                encoded_tx,
+                { "encoding": "base64", "skipPreflight": true, "maxRetries": 0 }
+            ]
+        })
+    };
+
     let effective_tok = v
         .auth_token
         .clone()
@@ -409,6 +419,8 @@ async fn submit_variant(
                 std::env::var("WHAL_ASTRALANE_API_KEY").ok().filter(|s| !s.is_empty())
             } else if target_url.contains("nozomi.temporal.xyz") {
                 std::env::var("WHAL_NOZOMI_API_KEY").ok().filter(|s| !s.is_empty())
+            } else if is_blockrazor {
+                std::env::var("WHAL_BLOCKRAZOR_API_KEY").ok().filter(|s| !s.is_empty())
             } else {
                 None
             }
@@ -427,9 +439,13 @@ async fn submit_variant(
 
     let mut req = client.post(&target_url).json(&payload);
     if let Some(tok) = &effective_tok {
-        req = req
-            .header("Authorization", format!("Bearer {tok}"))
-            .header("x-api-key", tok.as_str());
+        if is_blockrazor {
+            req = req.header("apikey", tok.as_str());
+        } else {
+            req = req
+                .header("Authorization", format!("Bearer {tok}"))
+                .header("x-api-key", tok.as_str());
+        }
     }
 
     match req.send().await {
@@ -438,6 +454,7 @@ async fn submit_variant(
             let rpc_err = body
                 .as_ref()
                 .and_then(|j| j.get("error"))
+                .filter(|e| !e.is_null() && e.as_str() != Some(""))
                 .map(|e| e.to_string());
             if let Some(err) = rpc_err {
                 return VariantSubmitResult {
@@ -450,7 +467,13 @@ async fn submit_variant(
             }
             let sig = body
                 .as_ref()
-                .and_then(|j| j.get("result").and_then(|r| r.as_str()).map(ToOwned::to_owned))
+                .and_then(|j| {
+                    j.get("result")
+                        .or_else(|| j.get("signature"))
+                        .and_then(|r| r.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(ToOwned::to_owned)
+                })
                 .or(Some(computed_sig));
             VariantSubmitResult {
                 lander: v.lander,
