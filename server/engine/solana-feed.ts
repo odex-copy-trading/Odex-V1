@@ -231,10 +231,10 @@ export class SolanaLiveFeed {
     this.connectPumpStream();
     this.priceTimer = setInterval(() => void this.refreshMarketAndBalance(), 30_000);
     this.priceTimer.unref();
-    // Fast 3s on-chain SOL balance refresh while RUNNING so Total balance never double-counts spent SOL after buys/sells
+    // Fast 4s on-chain SOL balance refresh (always active so deposits & live trades reflect immediately)
     this.balTimer = setInterval(() => {
-      if (this.cp.engineStatus === 'RUNNING') void this.refreshSolBalanceFast();
-    }, 3_000);
+      void this.refreshSolBalanceFast();
+    }, 4_000);
     this.balTimer.unref();
     this.paperTimer = setInterval(() => this.sweepExpiredPaperPositions(), 2_000);
     this.paperTimer.unref();
@@ -1805,6 +1805,27 @@ export class SolanaLiveFeed {
     }
   }
 
+  private emitBalances() {
+    const now = Date.now();
+    const nonces = this.cp.configState().config.wallets.nonce_accounts.length;
+    this.cp.ingestExternalEvent({
+      type: 'slot_tick',
+      ts: now,
+      chain: {
+        slot: this.lastSlot,
+        shredLatencyMs: 0,
+        nonces: { ready: nonces, total: nonces },
+        ring: { used: 0, size: 64 },
+      },
+      balances: {
+        sol: this.solBalance,
+        wsol: this.wsolBalance,
+        usdc: this.usdcBalance,
+        solUsd: this.solUsd,
+      },
+    });
+  }
+
   private async refreshSolBalanceFast() {
     const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
     if (!hotWallet) return;
@@ -1821,6 +1842,7 @@ export class SolanaLiveFeed {
         if (Math.abs(nextSol - this.solBalance) > 1e-6) {
           this.solBalance = nextSol;
         }
+        this.emitBalances();
       }
     } catch { /* ignore */ }
   }
@@ -1877,5 +1899,6 @@ export class SolanaLiveFeed {
       if (wsol !== null) this.wsolBalance = +wsol.toFixed(6);
       if (usdc !== null) this.usdcBalance = +usdc.toFixed(2);
     }
+    this.emitBalances();
   }
 }
