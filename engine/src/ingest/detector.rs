@@ -40,6 +40,7 @@ pub const LAUNCHLAB_PROGRAM_ID: PubkeyBytes = [
 /// 8-byte Anchor discriminators for buy and launch instructions.
 pub const DISC_PUMPFUN_BUY: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
 pub const DISC_PUMPFUN_BUY_EXACT_QUOTE_V3: [u8; 8] = [0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70];
+pub const DISC_PUMPFUN_BUY_EXACT_SOL_IN: [u8; 8] = [0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f];
 pub const DISC_PUMPFUN_CREATE_V2: [u8; 8] = [0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77];
 pub const DISC_PUMPFUN_CREATE_V2_TOKEN2022: [u8; 8] = [0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4];
 pub const DISC_PUMPSWAP_BUY: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
@@ -95,12 +96,14 @@ struct ParsedLaunch {
 fn parse_buy_ix(ix: &DecodedInstruction) -> Option<ParsedBuy> {
     let disc: [u8; 8] = ix.data.get(0..8)?.try_into().ok()?;
     if ix.program_id == PUMPFUN_PROGRAM_ID
-        && (disc == DISC_PUMPFUN_BUY || disc == DISC_PUMPFUN_BUY_EXACT_QUOTE_V3)
+        && (disc == DISC_PUMPFUN_BUY
+            || disc == DISC_PUMPFUN_BUY_EXACT_QUOTE_V3
+            || disc == DISC_PUMPFUN_BUY_EXACT_SOL_IN)
     {
         // Pump.fun buy account layout: [global, fee_recipient, mint(2), bonding_curve(3), ...]
         let mint = *ix.accounts.get(2)?;
         let pool_pda = *ix.accounts.get(3)?;
-        let estimated_spend = if disc == DISC_PUMPFUN_BUY_EXACT_QUOTE_V3 {
+        let estimated_spend = if disc == DISC_PUMPFUN_BUY_EXACT_QUOTE_V3 || disc == DISC_PUMPFUN_BUY_EXACT_SOL_IN {
             read_u64(&ix.data, 8)?
         } else {
             // Legacy buy(amount, max_sol_cost)
