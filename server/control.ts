@@ -388,7 +388,7 @@ export class ControlPlane extends EventEmitter {
               preTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
               postTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
             };
-          }>('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]);
+          }>('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 1 }]);
           if (!tx?.meta || tx.meta.err !== null) continue;
           const pre = (tx.meta.preTokenBalances ?? []).find((b) => b.owner === wallet && b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
           const post = (tx.meta.postTokenBalances ?? []).find((b) => b.owner === wallet && b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;

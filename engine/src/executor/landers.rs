@@ -139,7 +139,10 @@ impl LanderFanOut {
         self.http.clone()
     }
 
-    /// Generates distinct-signature Lighthouse-protected sell variants across all enabled SWQoS providers.
+    /// Generates distinct-signature Lighthouse-protected sell variants using Fhbh1D's sell profile:
+    /// - Routes to cheap-tip fast landers (`Astralane`, `Jito`, `Tpu`) at `0.0001 SOL` tip + `0.0001 SOL` priority fee
+    ///   (saving ~0.0011 SOL per sell vs high-minimum buy landers), falling back to all enabled landers if none are on.
+    /// - Caps per-lander sell fanout to 2 (5 fast sell txs total) so exits never waste spray fees.
     #[allow(clippy::too_many_arguments)]
     pub fn build_sell_variants(
         &self,
@@ -151,12 +154,26 @@ impl LanderFanOut {
         base_v1_cfg: V1TransactionConfig,
         lookup_tables: &[PubkeyBytes],
     ) -> Vec<VariantDispatch> {
+        const CHEAP_SELL_TIP_LAMPORTS: u64 = 100_000; // 0.0001 SOL (accepted by Astralane & Jito)
+        const SELL_PRIORITY_FEE_FLOOR: u64 = 100_000; // 0.0001 SOL (Fhbh1D sell priority fee)
+
+        let has_cheap_sell_lander = landers.iter().any(|l| {
+            l.enabled
+                && l.fanout > 0
+                && matches!(l.id, LanderId::Astralane | LanderId::Jito | LanderId::Tpu)
+        });
+
         let mut variants = Vec::new();
         for lander in landers {
             if !lander.enabled || lander.fanout == 0 {
                 continue;
             }
-            for idx in 0..lander.fanout {
+            let is_cheap_lander = matches!(lander.id, LanderId::Astralane | LanderId::Jito | LanderId::Tpu);
+            if has_cheap_sell_lander && !is_cheap_lander {
+                continue;
+            }
+            let sell_fanout = lander.fanout.min(2);
+            for idx in 0..sell_fanout {
                 let Some((nonce_pubkey, nonce_hash)) = self.resolve_nonce_or_blockhash(idx) else {
                     break;
                 };
@@ -165,18 +182,19 @@ impl LanderFanOut {
                 } else {
                     lander.tip_accounts[idx % lander.tip_accounts.len()]
                 };
-                let tip_span = lander.max_tip_lamports.saturating_sub(lander.min_tip_lamports);
-                let tip_step = if lander.fanout > 1 {
-                    (tip_span * idx as u64) / (lander.fanout as u64 - 1)
-                } else {
+                let tip_lamports = if lander.id == LanderId::Tpu {
                     0
+                } else if is_cheap_lander {
+                    CHEAP_SELL_TIP_LAMPORTS.max(lander.min_tip_lamports.min(CHEAP_SELL_TIP_LAMPORTS))
+                } else {
+                    lander.min_tip_lamports
                 };
-                let tip_lamports = lander.min_tip_lamports.saturating_add(tip_step);
 
                 let mut v1_cfg = base_v1_cfg;
                 v1_cfg.priority_fee_lamports = v1_cfg
                     .priority_fee_lamports
-                    .saturating_add((idx as u64) * 1_000);
+                    .max(SELL_PRIORITY_FEE_FLOOR)
+                    .saturating_add((idx as u64) * 100);
 
                 let tx = self.builder.build_sell_tx(
                     sell_ixs.to_vec(),

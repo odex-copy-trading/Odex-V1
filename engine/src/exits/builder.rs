@@ -56,7 +56,16 @@ pub fn build_protected_sell_instructions(p: &SellTxParams) -> Vec<InstructionSpe
             .unwrap_or(false);
 
     if direct_native {
-        // Direct native Pump.fun sell(amount, min_sol_output) — skips undeployed whal-sell-router & Lighthouse.
+        // Pre-sell Lighthouse balance dedupe on partial sells (Fhbh1D dual-Lighthouse sandwich):
+        // guarantees at most 1 racing partial sell lands; duplicates abort in ~664 CU with 0 SOL tip paid.
+        if p.sell_pct < 100 && p.pre_balance > 0 {
+            ixs.push(assert_sell_dedupe_balance(
+                p.bot_token_account,
+                p.pre_balance,
+                p.sell_pct,
+            ));
+        }
+        // Direct native Pump.fun sell(amount, min_sol_output)
         let sell_amount = if p.pre_balance > 0 {
             ((p.pre_balance as u128 * p.sell_pct.min(100) as u128) / 100).max(1) as u64
         } else {
