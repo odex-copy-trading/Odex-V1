@@ -95,6 +95,35 @@ function deriveAta(owner: string, tokenProgram: string, mint: string): string | 
   if (o.length !== 32 || tp.length !== 32 || m.length !== 32) return null;
   return derivePda([o, tp, m], ATA_PROGRAM);
 }
+function deriveBondingCurve(mint: string): string | null {
+  const m = b58Decode(mint);
+  if (m.length !== 32) return null;
+  return derivePda([Buffer.from('bonding-curve'), m], PUMPFUN_PROGRAM);
+}
+const PUMP_CREATE_DISC = Buffer.from([0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77]);
+const PUMP_CREATE_V2_DISC = Buffer.from([0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4]);
+function decodePumpCreateMeta(b58Data?: string): { name: string; symbol: string; uri: string } | null {
+  if (!b58Data) return null;
+  const buf = b58Decode(b58Data);
+  if (buf.length < 20) return null;
+  const disc = buf.subarray(0, 8);
+  if (!disc.equals(PUMP_CREATE_DISC) && !disc.equals(PUMP_CREATE_V2_DISC)) return null;
+  let off = 8;
+  const readStr = (): string | null => {
+    if (off + 4 > buf.length) return null;
+    const len = buf.readUInt32LE(off);
+    off += 4;
+    if (len > 512 || off + len > buf.length) return null;
+    const s = buf.subarray(off, off + len).toString('utf8');
+    off += len;
+    return s;
+  };
+  const name = readStr();
+  const symbol = readStr();
+  const uri = readStr();
+  if (name === null || symbol === null || uri === null) return null;
+  return { name, symbol, uri };
+}
 
 const ZERO_REVERTS = { duplicate: 0, mutex: 0, kolNotLanded: 0, slippage: 0, expired: 0 };
 
@@ -212,12 +241,19 @@ export class SolanaLiveFeed {
     // Automatic Pump.fun v3 REST fallback (1s) whenever PumpPortal WS is down (e.g., 502) or silent >12s
     this.pumpFallbackTimer = setInterval(() => void this.pollPumpFunFallback(), 1_000);
     this.pumpFallbackTimer.unref();
-    this.cp.on('telemetry', (e: { type: string; positions?: Position[] }) => {
+    this.cp.on('telemetry', (e: { type: string; positions?: Position[]; closed?: ClosedPosition }) => {
       if (e.type === 'config_updated') this.reload();
       if (e.type === 'kols_updated') this.syncKolSubscriptions();
-      if (e.type === 'position_updated' && e.positions) {
-        const liveMints = new Set(e.positions.map((p) => p.mint));
-        for (const mint of this.paper.keys()) if (!liveMints.has(mint)) this.paper.delete(mint);
+      if (e.type === 'position_updated') {
+        if (e.positions) {
+          const liveMints = new Set(e.positions.map((p) => p.mint));
+          for (const mint of this.paper.keys()) if (!liveMints.has(mint)) this.paper.delete(mint);
+        }
+        // Learn rugged creators from live Stop-Loss exits identically to Paper Mode.
+        if (e.closed && !e.closed.id.startsWith('cl_paper_') && e.closed.proceedsSol < e.closed.entrySol * 0.94) {
+          const c = this.liveCreators.get(e.closed.mint);
+          if (c) this.ruggedCreators.add(c);
+        }
       }
     });
   }
@@ -625,9 +661,9 @@ export class SolanaLiveFeed {
                 err?: unknown;
                 preBalances?: number[];
                 postBalances?: number[];
-                innerInstructions?: Array<{ instructions?: Array<{ programId?: string; accounts?: string[] }> }>;
+                innerInstructions?: Array<{ instructions?: Array<{ programId?: string; accounts?: string[]; data?: string }> }>;
               };
-              transaction?: { message?: { instructions?: Array<{ programId?: string; accounts?: string[] }> } };
+              transaction?: { message?: { instructions?: Array<{ programId?: string; accounts?: string[]; data?: string }> } };
             } | null;
           };
           const tx = j.result;
@@ -648,15 +684,22 @@ export class SolanaLiveFeed {
           const bondingCurveKey = pumpIx.accounts[3];
           const creator = pumpIx.accounts[6];
           if (!mint || !bondingCurveKey || this.seenMints.has(mint)) return;
+          let meta: { name: string; symbol: string; uri: string } | null = null;
+          for (const ix of allIx) {
+            if (ix.programId === PUMPFUN_PROGRAM && typeof ix.data === 'string') {
+              meta = decodePumpCreateMeta(ix.data);
+              if (meta) break;
+            }
+          }
           const pre = tx.meta?.preBalances?.[0] ?? 0;
           const post = tx.meta?.postBalances?.[0] ?? 0;
           const devBuySol = Math.max(0, +(((pre - post) / 1e9) - 0.025).toFixed(4));
           this.handleNewLaunch({
             mint,
             signature,
-            symbol: mint.slice(0, 5),
-            name: 'Helius live',
-            uri: 'helius',
+            symbol: meta?.symbol ?? '',
+            name: meta?.name ?? '',
+            uri: meta?.uri ?? '',
             solAmount: devBuySol,
             bondingCurveKey,
             creator,
@@ -770,13 +813,15 @@ export class SolanaLiveFeed {
           }
         }
         this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, undefined, msg.creator);
-      } else if (this.cp.engineStatus === 'RUNNING' && msg.bondingCurveKey) {
+      } else if (this.cp.engineStatus === 'RUNNING') {
+        const curveKey = msg.bondingCurveKey || deriveBondingCurve(msg.mint);
+        if (!curveKey) return;
         const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));
         if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
         void this.dispatchPumpLaunchLive({
           venue: ev.venue,
           mint: msg.mint,
-          bondingCurveKey: msg.bondingCurveKey,
+          bondingCurveKey: curveKey,
           signature: msg.signature,
           normSym,
           slot: msg.slotOverride ?? slot,
