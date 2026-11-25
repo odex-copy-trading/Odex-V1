@@ -3,6 +3,24 @@ import type { BotConfig } from '../../lib/config/schema';
 import type { EngineSource, SellPct, TelemetryEvent } from '../../lib/telemetry';
 import type { Kol, NonceHealth, TerminalState } from '../../lib/types';
 
+export interface BridgeTriggerPayload {
+  kind: 'kol_buy' | 'launch';
+  venue: 'Pump.fun' | 'PumpSwap' | 'Raydium LaunchLab' | 'Raydium CPMM';
+  mint: string;
+  poolPda: string;
+  slot: number;
+  buySizeSol: number;
+  maxCurveReserveSol: number;
+  kolId?: string;
+  kolWallet?: string;
+  creator?: string;
+  devBuySol?: number;
+  symbol?: string;
+  name?: string;
+  uri?: string;
+  dexAccounts: string[];
+}
+
 export type EngineCommand =
   | { type: 'control'; status: 'RUNNING' | 'PAUSED' | 'SHADOW' }
   | { type: 'kill'; reason: string }
@@ -10,7 +28,8 @@ export type EngineCommand =
   | { type: 'config.apply'; version: number; config: BotConfig }
   | { type: 'kol.upsert'; kol: Kol }
   | { type: 'kol.remove'; id: string }
-  | { type: 'nonce'; action: 'create' | 'topup' | 'advance' | 'check'; count?: number; pubkey?: string };
+  | { type: 'nonce'; action: 'create' | 'topup' | 'advance' | 'check'; count?: number; pubkey?: string }
+  | { type: 'trigger.dispatch'; trigger: BridgeTriggerPayload };
 
 /** Runtime state only the engine knows. Config, KOL rules and history belong to the control plane. */
 export type EngineRuntime = Pick<TerminalState, 'engine' | 'chain' | 'balances' | 'feed' | 'positions' | 'closed' | 'landers' | 'sweeps' | 'inventory' | 'rent' | 'session'> & {

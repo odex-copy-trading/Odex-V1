@@ -79,6 +79,10 @@ impl ExecutorService {
         self.fanout.nonce_pool()
     }
 
+    pub fn set_recent_blockhash(&self, hash: [u8; 32]) {
+        self.fanout.set_recent_blockhash(hash);
+    }
+
     pub fn programs(&self) -> &ProgramIds {
         self.fanout.programs()
     }

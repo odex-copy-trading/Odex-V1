@@ -78,6 +78,7 @@ pub struct LanderFanOut {
     nonces: NoncePool,
     http: reqwest::Client,
     signer: Option<Arc<HotWalletSigner>>,
+    recent_blockhash: Arc<std::sync::RwLock<[u8; 32]>>,
 }
 
 impl LanderFanOut {
@@ -95,7 +96,34 @@ impl LanderFanOut {
             .pool_max_idle_per_host(32)
             .build()
             .unwrap_or_default();
-        Self { builder, nonces, http, signer }
+        Self {
+            builder,
+            nonces,
+            http,
+            signer,
+            recent_blockhash: Arc::new(std::sync::RwLock::new([0u8; 32])),
+        }
+    }
+
+    pub fn set_recent_blockhash(&self, hash: [u8; 32]) {
+        if let Ok(mut g) = self.recent_blockhash.write() {
+            *g = hash;
+        }
+    }
+
+    fn resolve_nonce_or_blockhash(&self, idx: usize) -> Option<(PubkeyBytes, [u8; 32])> {
+        if let Some(n) = self.nonces.next_ready() {
+            return Some((n.pubkey, n.nonce_hash));
+        }
+        if idx > 0 {
+            return None;
+        }
+        let bh = self.recent_blockhash.read().map(|g| *g).unwrap_or([0u8; 32]);
+        if bh != [0u8; 32] {
+            Some(([0u8; 32], bh))
+        } else {
+            None
+        }
     }
 
     pub fn nonce_pool(&self) -> NoncePool {
@@ -124,7 +152,7 @@ impl LanderFanOut {
                 continue;
             }
             for idx in 0..lander.fanout {
-                let Some(nonce) = self.nonces.next_ready() else {
+                let Some((nonce_pubkey, nonce_hash)) = self.resolve_nonce_or_blockhash(idx) else {
                     break;
                 };
                 let tip_account = if lander.tip_accounts.is_empty() {
@@ -149,8 +177,8 @@ impl LanderFanOut {
                     sell_ixs.to_vec(),
                     hot_wallet,
                     bot_token_account,
-                    nonce.pubkey,
-                    nonce.nonce_hash,
+                    nonce_pubkey,
+                    nonce_hash,
                     tip_account,
                     tip_lamports,
                     version,
@@ -187,7 +215,7 @@ impl LanderFanOut {
                 continue;
             }
             for idx in 0..lander.fanout {
-                let Some(nonce) = self.nonces.next_ready() else {
+                let Some((nonce_pubkey, nonce_hash)) = self.resolve_nonce_or_blockhash(idx) else {
                     break;
                 };
                 let tip_account = if lander.tip_accounts.is_empty() {
@@ -229,8 +257,8 @@ impl LanderFanOut {
                     v1_config: v1_cfg,
                     lookup_tables: lookup_tables.to_vec(),
                     hot_wallet,
-                    nonce_account: nonce.pubkey,
-                    nonce_hash: nonce.nonce_hash,
+                    nonce_account: nonce_pubkey,
+                    nonce_hash,
                     tip_account,
                     tip_lamports,
                     buy_slot_ttl,

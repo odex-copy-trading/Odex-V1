@@ -65,6 +65,8 @@ export class SimulatedEngine implements EngineAdapter {
         if (cmd.action === 'topup') return { type: 'nonce.topup' };
         if (cmd.action === 'advance') return { type: 'nonce.advance', pubkey: cmd.pubkey ?? '' };
         return { type: 'nonce.check' };
+      case 'trigger.dispatch':
+        throw new EngineError('trigger.dispatch is only supported by the live Rust engine bridge', 400);
     }
   }
 

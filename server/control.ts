@@ -10,7 +10,7 @@ import type { CloudSync } from './cloud-sync';
 import type { Db } from './db';
 import { HttpError } from './http';
 import type { SecretStore } from './secrets';
-import { EngineError, type AdapterEvent, type EngineAdapter, type EngineRuntime } from './engine/types';
+import { EngineError, type AdapterEvent, type BridgeTriggerPayload, type EngineAdapter, type EngineRuntime } from './engine/types';
 
 export interface Actor { actor: string; ip: string | null }
 
@@ -112,6 +112,14 @@ export class ControlPlane extends EventEmitter {
     this.db.updateKolStats(updated);
     this.cloud?.syncKol(updated);
     this.publish({ type: 'kols_updated', ts: Date.now(), kols: this.db.listKols() });
+  }
+
+  /** Forwards a live mainnet KOL or launch trigger over the bridge to the Rust engine when RUNNING. */
+  dispatchLiveTrigger(trigger: BridgeTriggerPayload) {
+    if (this.engineStatus !== 'RUNNING' || this.engineSource !== 'bridge') return;
+    void this.engine.command({ type: 'trigger.dispatch', trigger }).catch((e) => {
+      console.warn(`[control] trigger.dispatch rejected for $${trigger.symbol ?? trigger.mint.slice(0, 6)}: ${(e as Error).message}`);
+    });
   }
 
   /** Updates Paper-mode positions & optional closed trade using real mainnet prices. */

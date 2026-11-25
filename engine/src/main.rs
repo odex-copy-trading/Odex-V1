@@ -31,7 +31,8 @@ use whal_engine::executor::{
 };
 use whal_engine::exits::{ExitEngine, ExitPolicy, SellTxParams};
 use whal_engine::ingest::{
-    types::pubkey_from_bs58, GeyserConfig, IngestEngine, KolRule, LaunchFilterConfig, PubkeyBytes,
+    types::{compute_opportunity_key, pubkey_from_bs58, StrategyId, TriggerEvent, TriggerKind, WSOL_MINT},
+    GeyserConfig, IngestEngine, KolRule, LaunchFilterConfig, OpportunityBus, PubkeyBytes,
     ShredStreamConfig, Venue, WatchlistCache,
 };
 use whal_engine::metrics::EngineMetrics;
@@ -329,6 +330,7 @@ struct BridgeContext {
     exit_engine: Arc<ExitEngine>,
     breakers: Arc<SafetyCircuitBreakers>,
     watchlist: WatchlistCache,
+    bus: OpportunityBus,
     rpc_url: String,
     default_hot_wallet: PubkeyBytes,
     outbound_tx: broadcast::Sender<Value>,
@@ -479,6 +481,100 @@ async fn connect_bridge_once(
                                     let _ = pool.refresh_from_rpc(&http, &rpc).await;
                                 });
                                 (true, None)
+                            }
+                            "trigger.dispatch" => {
+                                let cur_status = ctx
+                                    .engine_status
+                                    .read()
+                                    .map(|s| s.clone())
+                                    .unwrap_or_default();
+                                if cur_status != "RUNNING" {
+                                    (false, Some("Engine is not RUNNING".into()))
+                                } else if let Some(t) = cmd.get("trigger") {
+                                    let mint_s = t.get("mint").and_then(|v| v.as_str()).unwrap_or("");
+                                    let pool_s = t.get("poolPda").and_then(|v| v.as_str()).unwrap_or(mint_s);
+                                    match (pubkey_from_bs58(mint_s), pubkey_from_bs58(pool_s)) {
+                                        (Ok(mint), Ok(pool_pda)) => {
+                                            let venue = match t.get("venue").and_then(|v| v.as_str()).unwrap_or("Pump.fun") {
+                                                "PumpSwap" => Venue::PumpSwap,
+                                                "Raydium LaunchLab" => Venue::RaydiumLaunchLab,
+                                                "Raydium CPMM" => Venue::RaydiumCpmm,
+                                                _ => Venue::PumpFun,
+                                            };
+                                            let slot = t.get("slot").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let buy_size_sol = t.get("buySizeSol").and_then(|v| v.as_f64()).unwrap_or(0.1).clamp(0.01, 50.0);
+                                            let max_curve_sol = t.get("maxCurveReserveSol").and_then(|v| v.as_f64()).unwrap_or(55.0);
+                                            let dex_accounts: Vec<PubkeyBytes> = t
+                                                .get("dexAccounts")
+                                                .and_then(|v| v.as_array())
+                                                .map(|arr| {
+                                                    arr.iter()
+                                                        .filter_map(|x| x.as_str().and_then(|s| pubkey_from_bs58(s).ok()))
+                                                        .collect()
+                                                })
+                                                .unwrap_or_default();
+                                            let kind_str = t.get("kind").and_then(|v| v.as_str()).unwrap_or("kol_buy");
+                                            let (strategy_id, kind) = if kind_str == "kol_buy" {
+                                                let kol_id = t.get("kolId").and_then(|v| v.as_str()).unwrap_or("kol").to_string();
+                                                let kol_wallet = t
+                                                    .get("kolWallet")
+                                                    .and_then(|v| v.as_str())
+                                                    .and_then(|s| pubkey_from_bs58(s).ok())
+                                                    .unwrap_or([0u8; 32]);
+                                                (
+                                                    StrategyId::KolBackrun,
+                                                    TriggerKind::KolBuy {
+                                                        kol_id,
+                                                        kol_wallet,
+                                                        watched_balance_account: kol_wallet,
+                                                        is_spl_quote: false,
+                                                        pre_balance: 0,
+                                                        balance_threshold: 0,
+                                                        estimated_kol_spend: (buy_size_sol * 1_000_000_000.0) as u64,
+                                                        buy_size_lamports: (buy_size_sol * 1_000_000_000.0) as u64,
+                                                        max_curve_reserve_lamports: (max_curve_sol * 1_000_000_000.0) as u64,
+                                                    },
+                                                )
+                                            } else {
+                                                let creator = t
+                                                    .get("creator")
+                                                    .and_then(|v| v.as_str())
+                                                    .and_then(|s| pubkey_from_bs58(s).ok())
+                                                    .unwrap_or([0u8; 32]);
+                                                let dev_buy_sol = t.get("devBuySol").and_then(|v| v.as_f64()).unwrap_or(0.5);
+                                                (
+                                                    StrategyId::PumpFunCreateV2Snipe,
+                                                    TriggerKind::ZeroBlockLaunch {
+                                                        creator,
+                                                        dev_buy_lamports: (dev_buy_sol * 1_000_000_000.0) as u64,
+                                                        name: t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                                        symbol: t.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                                        uri: t.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                                    },
+                                                )
+                                            };
+                                            let opportunity_key = compute_opportunity_key(&mint, slot, strategy_id);
+                                            let trigger = TriggerEvent {
+                                                opportunity_key,
+                                                strategy_id,
+                                                trigger_slot: slot,
+                                                detected_at_us: now_ms() * 1_000,
+                                                venue,
+                                                mint,
+                                                quote_mint: WSOL_MINT,
+                                                pool_pda,
+                                                dex_accounts,
+                                                kind,
+                                            };
+                                            info!(mint = %mint_s, kind = %kind_str, slot, "Received bridge trigger.dispatch -> publishing to OpportunityBus");
+                                            ctx.bus.publish(trigger);
+                                            (true, None)
+                                        }
+                                        _ => (false, Some("Invalid mint or poolPda".into())),
+                                    }
+                                } else {
+                                    (false, Some("Missing trigger payload".into()))
+                                }
                             }
                             "sell" => {
                                 let mint_str = cmd.get("mint").and_then(|v| v.as_str()).unwrap_or("");
@@ -859,6 +955,34 @@ async fn main() {
         }
     });
 
+    // 4s Recent Blockhash RPC refresher (enables live execution even when durable nonce pool is 0/0)
+    if !rpc_url.is_empty() {
+        let bh_exec = executor.clone();
+        let bh_rpc = rpc_url.clone();
+        tokio::spawn(async move {
+            let http = reqwest::Client::new();
+            let mut interval = tokio::time::interval(Duration::from_secs(4));
+            loop {
+                interval.tick().await;
+                let body = json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getLatestBlockhash",
+                    "params": [{ "commitment": "processed" }]
+                });
+                if let Ok(resp) = http.post(&bh_rpc).json(&body).send().await {
+                    if let Ok(v) = resp.json::<Value>().await {
+                        if let Some(bh_str) = v.pointer("/result/value/blockhash").and_then(|x| x.as_str()) {
+                            if let Ok(bh) = pubkey_from_bs58(bh_str) {
+                                bh_exec.set_recent_blockhash(bh);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // Step 10: Prometheus /metrics + /health server & Step 3 /internal/engine bridge
     let bridge_ctx = Arc::new(BridgeContext {
         engine_status,
@@ -866,6 +990,7 @@ async fn main() {
         exit_engine,
         breakers,
         watchlist: ingest.watchlist.clone(),
+        bus: ingest.bus.clone(),
         rpc_url,
         default_hot_wallet: hot_wallet_pubkey,
         outbound_tx,

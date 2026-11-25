@@ -493,7 +493,7 @@ export class SolanaLiveFeed {
       winner: null,
       cuUsed: 0,
       reverts: ZERO_REVERTS,
-      outcome: 'shadow',
+      outcome: this.cp.engineStatus === 'SHADOW' ? 'shadow' : 'missed',
       note: msg.name ? `${msg.name.slice(0, 28)} · live mainnet` : 'Live mainnet launch',
     };
 
@@ -522,7 +522,7 @@ export class SolanaLiveFeed {
       if (this.ruggedCreators.has(msg.creator) || prev.length >= 2) creatorClean = false;
     }
     if (
-      this.cp.engineStatus === 'SHADOW' &&
+      (this.cp.engineStatus === 'SHADOW' || this.cp.engineStatus === 'RUNNING') &&
       cfg.strategy.modes.pumpfun_create_snipe &&
       isFreshForAutoBuy &&
       notDuplicateClone &&
@@ -530,18 +530,35 @@ export class SolanaLiveFeed {
       withinCurve &&
       hasMeta &&
       sizeSol >= 0.5 &&
-      sizeSol <= 5.0 &&
-      this.paper.size < 5 &&
-      !this.paper.has(msg.mint)
+      sizeSol <= 5.0
     ) {
-      if (normSym) {
-        this.recentBoughtSymbols.set(normSym, ts);
-        if (this.recentBoughtSymbols.size > 300) {
-          const oldest = this.recentBoughtSymbols.keys().next().value;
-          if (oldest) this.recentBoughtSymbols.delete(oldest);
+      if (this.cp.engineStatus === 'SHADOW' && this.paper.size < 5 && !this.paper.has(msg.mint)) {
+        if (normSym) {
+          this.recentBoughtSymbols.set(normSym, ts);
+          if (this.recentBoughtSymbols.size > 300) {
+            const oldest = this.recentBoughtSymbols.keys().next().value;
+            if (oldest) this.recentBoughtSymbols.delete(oldest);
+          }
         }
+        this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, undefined, msg.creator);
+      } else if (this.cp.engineStatus === 'RUNNING' && msg.bondingCurveKey) {
+        if (normSym) this.recentBoughtSymbols.set(normSym, ts);
+        this.cp.dispatchLiveTrigger({
+          kind: 'launch',
+          venue: ev.venue,
+          mint: msg.mint,
+          poolPda: msg.bondingCurveKey,
+          slot,
+          buySizeSol: cfg.strategy.default_buy_sol || 0.1,
+          maxCurveReserveSol: cfg.strategy.max_curve_reserve_sol,
+          creator: msg.creator,
+          devBuySol: sizeSol,
+          symbol,
+          name: msg.name,
+          uri: msg.uri,
+          dexAccounts: [],
+        });
       }
-      this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, undefined, msg.creator);
     }
     if (!ev.image && msg.uri) void this.hydrateTokenImage(ev, msg.uri, msg.signature ?? null);
   }
@@ -664,7 +681,12 @@ export class SolanaLiveFeed {
               preTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
               postTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
             };
-            transaction?: { message?: { accountKeys?: Array<string | { pubkey: string }> } };
+            transaction?: {
+            message?: {
+              accountKeys?: Array<string | { pubkey: string }>;
+              instructions?: Array<{ programId?: string; accounts?: string[] }>;
+            };
+          };
           } | null;
         };
         return j.result ?? null;
@@ -734,16 +756,23 @@ export class SolanaLiveFeed {
       const kol = this.cp.snapshot().kols.find((k) => k.enabled && k.pubkey === kolPubkey);
       if (!kol || solSpent < kol.triggerMargin) return;
 
+      const dexIx = (tx.transaction?.message?.instructions ?? []).find(
+        (ix) => ix.programId && Array.isArray(ix.accounts) && ix.accounts.length >= 10 && DEX_PROGRAM_VENUES.some(([pid]) => pid === ix.programId),
+      );
+      const dexAccounts = dexIx?.accounts ?? [];
+      const poolPda = dexAccounts[3] ?? dexAccounts[0] ?? boughtMint;
       const entryPriceSol = solSpent / boughtTokens;
       this.onKolBuySignal(
         {
           signature,
           mint: boughtMint,
           traderPublicKey: kolPubkey,
+          bondingCurveKey: poolPda,
           solAmount: +solSpent.toFixed(4),
           venueOverride: venue,
           slotOverride: slot,
           entryPriceSol,
+          dexAccounts,
         },
         this.pumpWs ?? undefined,
       );
@@ -764,6 +793,7 @@ export class SolanaLiveFeed {
       venueOverride?: FeedEvent['venue'];
       slotOverride?: number;
       entryPriceSol?: number;
+      dexAccounts?: string[];
     },
     ws?: WebSocket,
   ) {
@@ -795,13 +825,27 @@ export class SolanaLiveFeed {
       winner: null,
       cuUsed: 0,
       reverts: ZERO_REVERTS,
-      outcome: 'shadow',
+      outcome: this.cp.engineStatus === 'SHADOW' ? 'shadow' : 'missed',
       note: `Copied ${kol.label} · ${msg.solAmount ? `${msg.solAmount} SOL · ` : ''}${msg.venueOverride ? 'RPC live' : 'live mainnet'}`,
     };
     this.cp.ingestExternalEvent({ type: 'kol_shred_detected', ts, slot, kolId: kol.id, mint: ev.mint, symbol, venue: ev.venue });
     this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, msg.signature ?? null);
     if (this.cp.engineStatus === 'SHADOW' && this.paper.size < 5 && !this.paper.has(msg.mint)) {
       this.openPaperPosition(ev, kol.buySizeSol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, msg.entryPriceSol);
+    } else if (this.cp.engineStatus === 'RUNNING') {
+      this.cp.dispatchLiveTrigger({
+        kind: 'kol_buy',
+        venue: ev.venue,
+        mint: msg.mint,
+        poolPda: msg.bondingCurveKey || msg.mint,
+        slot,
+        buySizeSol: kol.buySizeSol,
+        maxCurveReserveSol: kol.maxCurveReserveSol,
+        kolId: kol.id,
+        kolWallet: kol.pubkey,
+        symbol,
+        dexAccounts: msg.dexAccounts ?? [],
+      });
     }
   }
 

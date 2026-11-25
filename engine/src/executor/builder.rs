@@ -249,17 +249,19 @@ impl TxBuilder {
     pub fn build_buy_tx(&self, trigger: &TriggerEvent, p: &BuildVariantParams) -> BuiltTransaction {
         let mut ixs = Vec::with_capacity(9);
 
-        // ix 0: SystemProgram::AdvanceNonceAccount (instruction enum index = 4u32 LE)
-        ixs.push(InstructionSpec {
-            label: "advance_nonce",
-            program_id: SYSTEM_PROGRAM_ID,
-            accounts: vec![
-                AccountMetaSpec { pubkey: p.nonce_account, is_signer: false, is_writable: true },
-                AccountMetaSpec { pubkey: [0x06; 32], is_signer: false, is_writable: false }, // RecentBlockhashes sysvar
-                AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: false },
-            ],
-            data: 4u32.to_le_bytes().to_vec(),
-        });
+        // ix 0: SystemProgram::AdvanceNonceAccount (instruction enum index = 4u32 LE) — omitted when using recent blockhash fallback
+        if p.nonce_account != [0u8; 32] {
+            ixs.push(InstructionSpec {
+                label: "advance_nonce",
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![
+                    AccountMetaSpec { pubkey: p.nonce_account, is_signer: false, is_writable: true },
+                    AccountMetaSpec { pubkey: [0x06; 32], is_signer: false, is_writable: false }, // RecentBlockhashes sysvar
+                    AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: false },
+                ],
+                data: 4u32.to_le_bytes().to_vec(),
+            });
+        }
 
         let direct_native_dex = std::env::var("WHAL_DIRECT_NATIVE_DEX")
             .ok()
@@ -603,16 +605,18 @@ impl TxBuilder {
         lookup_tables: &[PubkeyBytes],
     ) -> BuiltTransaction {
         let mut ixs = Vec::with_capacity(sell_ixs.len() + 4);
-        ixs.push(InstructionSpec {
-            label: "advance_nonce",
-            program_id: SYSTEM_PROGRAM_ID,
-            accounts: vec![
-                AccountMetaSpec { pubkey: nonce_account, is_signer: false, is_writable: true },
-                AccountMetaSpec { pubkey: [0x06; 32], is_signer: false, is_writable: false },
-                AccountMetaSpec { pubkey: hot_wallet, is_signer: true, is_writable: false },
-            ],
-            data: 4u32.to_le_bytes().to_vec(),
-        });
+        if nonce_account != [0u8; 32] {
+            ixs.push(InstructionSpec {
+                label: "advance_nonce",
+                program_id: SYSTEM_PROGRAM_ID,
+                accounts: vec![
+                    AccountMetaSpec { pubkey: nonce_account, is_signer: false, is_writable: true },
+                    AccountMetaSpec { pubkey: [0x06; 32], is_signer: false, is_writable: false },
+                    AccountMetaSpec { pubkey: hot_wallet, is_signer: true, is_writable: false },
+                ],
+                data: 4u32.to_le_bytes().to_vec(),
+            });
+        }
         if version == TxVersion::V0 {
             let mut cu_limit = Vec::with_capacity(5);
             cu_limit.push(2u8);
