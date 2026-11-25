@@ -1,6 +1,6 @@
 //! Position Manager & Automated Staged Exit Ladder Engine.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use dashmap::DashMap;
 
 use crate::ingest::{PubkeyBytes, Venue};
@@ -21,8 +21,12 @@ pub struct LadderStep {
 pub struct ExitPolicy {
     pub same_slot_take_profit_enabled: bool,
     pub same_slot_take_profit_pct: u64, // default 25%
+    pub instant_tp_pct: u64,            // default 25% on +18% pop (1:1 with Paper Mode)
+    pub stop_loss_pct: f64,             // default 30% hard SL
+    pub trailing_stop_pct: f64,         // default 18% trailing drop from peak (arms at +30%)
+    pub curve_floor_enabled: bool,
     pub min_liquidity_floor_lamports: u64,
-    pub max_hold_secs: u64,
+    pub max_hold_secs: u64,             // default 1560s (26m moonbag hard cap)
     pub ladder: Vec<LadderStep>,
 }
 
@@ -31,8 +35,12 @@ impl Default for ExitPolicy {
         Self {
             same_slot_take_profit_enabled: true,
             same_slot_take_profit_pct: 25,
+            instant_tp_pct: 25,
+            stop_loss_pct: 30.0,
+            trailing_stop_pct: 18.0,
+            curve_floor_enabled: true,
             min_liquidity_floor_lamports: 10_000_000_000, // 10 SOL
-            max_hold_secs: 900,
+            max_hold_secs: 1560,
             ladder: vec![
                 LadderStep { sell_pct: 15, trigger: LadderTrigger::PnlMultiple(1.5) },
                 LadderStep { sell_pct: 33, trigger: LadderTrigger::PnlMultiple(2.5) },
@@ -53,6 +61,10 @@ pub struct ManagedPosition {
     pub opened_slot: u64,
     pub entry_price_sol: f64,
     pub token_balance: u64,
+    pub initial_tokens: f64,
+    pub peak_price_sol: f64,
+    pub breakeven_armed: bool,
+    pub instant_tp_fired: bool,
     pub dex_accounts: Vec<PubkeyBytes>,
     pub same_slot_tp_fired: bool,
     pub fired_steps: Vec<bool>,
@@ -69,7 +81,7 @@ pub struct ExitOrder {
 pub struct ExitEngine {
     positions: Arc<DashMap<PubkeyBytes, ManagedPosition>>,
     twap_state: Arc<DashMap<PubkeyBytes, (u64, u8)>>, // (last_drip_secs, drips_fired)
-    policy: ExitPolicy,
+    policy: RwLock<ExitPolicy>,
 }
 
 impl ExitEngine {
@@ -77,7 +89,14 @@ impl ExitEngine {
         Self {
             positions: Arc::new(DashMap::new()),
             twap_state: Arc::new(DashMap::new()),
-            policy,
+            policy: RwLock::new(policy),
+        }
+    }
+
+    /// Hot-reloads the live exit policy from Control Plane `config.apply` (1:1 parity with Paper Mode).
+    pub fn update_policy(&self, policy: ExitPolicy) {
+        if let Ok(mut guard) = self.policy.write() {
+            *guard = policy;
         }
     }
 
@@ -88,14 +107,15 @@ impl ExitEngine {
         mut pos: ManagedPosition,
         high_conviction: bool,
     ) -> Option<ExitOrder> {
-        pos.fired_steps = vec![false; self.policy.ladder.len()];
+        let policy = self.policy.read().map(|g| g.clone()).unwrap_or_default();
+        pos.fired_steps = vec![false; policy.ladder.len()];
         let mint = pos.mint;
-        let same_slot_order = if high_conviction && self.policy.same_slot_take_profit_enabled {
+        let same_slot_order = if high_conviction && policy.same_slot_take_profit_enabled {
             pos.same_slot_tp_fired = true;
             Some(ExitOrder {
                 mint,
-                sell_pct: self.policy.same_slot_take_profit_pct,
-                close_account: self.policy.same_slot_take_profit_pct >= 100,
+                sell_pct: policy.same_slot_take_profit_pct,
+                close_account: policy.same_slot_take_profit_pct >= 100,
                 reason: "Same-slot take-profit",
             })
         } else {
@@ -105,19 +125,36 @@ impl ExitEngine {
         same_slot_order
     }
 
-    /// Evaluates a live Geyser price + liquidity update against the staged Exit Ladder.
+    /// Evaluates a live on-chain per-token price + remaining UI tokens + curve liquidity against
+    /// the exact 1:1 Paper Mode exit rules (curve floor, 2-3s fail-fast SL, hard SL, breakeven shield,
+    /// trailing stop, 45s dead-pos time-stop, 5m/26m caps, instant +18% TP, TWAP drip, exit ladder).
     pub fn on_price_update(
         &self,
         mint: &PubkeyBytes,
-        current_price_sol: f64,
+        current_unit_price_sol: f64,
+        current_ui_tokens: f64,
         curve_reserve_lamports: u64,
         now_secs: u64,
     ) -> Option<ExitOrder> {
+        let policy = self.policy.read().map(|g| g.clone()).unwrap_or_default();
         let mut entry = self.positions.get_mut(mint)?;
         let pos = entry.value_mut();
 
+        // Capture initial confirmed on-chain token balance once so partial TP sells never distort `mult`.
+        if pos.initial_tokens <= 0.0 && current_ui_tokens > 0.0 {
+            pos.initial_tokens = current_ui_tokens;
+        }
+        let entry_unit_price = if pos.initial_tokens > 0.0 {
+            pos.entry_price_sol / pos.initial_tokens
+        } else {
+            pos.entry_price_sol
+        };
+        if current_unit_price_sol > pos.peak_price_sol {
+            pos.peak_price_sol = current_unit_price_sol;
+        }
+
         // 1. Emergency liquidity floor protection -> 100% exit + rent reclaim
-        if curve_reserve_lamports < self.policy.min_liquidity_floor_lamports {
+        if policy.curve_floor_enabled && curve_reserve_lamports < policy.min_liquidity_floor_lamports {
             return Some(ExitOrder {
                 mint: *mint,
                 sell_pct: 100,
@@ -126,16 +163,23 @@ impl ExitEngine {
             });
         }
 
-        // 2. Max hold time cap -> 100% exit + rent reclaim
         let held_secs = now_secs.saturating_sub(pos.opened_at_secs);
-        let mult = if pos.entry_price_sol > 0.0 {
-            current_price_sol / pos.entry_price_sol
+        let mult = if entry_unit_price > 0.0 {
+            current_unit_price_sol / entry_unit_price
         } else {
-            0.0
+            1.0
         };
+        if mult >= 1.25 {
+            pos.breakeven_armed = true;
+        }
 
-        // 2a. Fhbh1D Fail-Fast Stop-Loss: dump 100% within 2–3s if price drops <= -6%
-        if held_secs >= 2 && held_secs <= 12 && mult > 0.0 && mult <= 0.94 {
+        // 1b. Fhbh1D 2–3s Fail-Fast Stop-Loss: dump 100% at -6% if momentum fails early
+        if held_secs >= 2
+            && held_secs <= 12
+            && mult > 0.0
+            && mult <= 0.94
+            && pos.peak_price_sol < entry_unit_price * 1.10
+        {
             return Some(ExitOrder {
                 mint: *mint,
                 sell_pct: 100,
@@ -144,8 +188,44 @@ impl ExitEngine {
             });
         }
 
-        // 2b. Fhbh1D 45s hard time-stop for flat/dead positions (< +5%)
-        if held_secs >= 45 && held_secs < 90 && mult > 0.0 && mult < 1.05 {
+        // 2. Hard Stop-Loss (e.g. -30%)
+        if policy.stop_loss_pct > 0.0 && mult > 0.0 && mult <= 1.0 - policy.stop_loss_pct / 100.0 {
+            return Some(ExitOrder {
+                mint: *mint,
+                sell_pct: 100,
+                close_account: true,
+                reason: "Hard stop-loss",
+            });
+        }
+
+        // 2b. Breakeven Shield: once up >= +25%, protect entry + 3% fee buffer so winners never turn red
+        if pos.breakeven_armed && mult > 0.0 && mult <= 1.03 {
+            return Some(ExitOrder {
+                mint: *mint,
+                sell_pct: 100,
+                close_account: true,
+                reason: "Breakeven shield",
+            });
+        }
+
+        // 3. Trailing Stop-Loss (arms once peak >= +30%)
+        if policy.trailing_stop_pct > 0.0
+            && pos.peak_price_sol >= entry_unit_price * 1.30
+            && pos.peak_price_sol > 0.0
+        {
+            let drop_from_peak = (pos.peak_price_sol - current_unit_price_sol) / pos.peak_price_sol;
+            if drop_from_peak >= policy.trailing_stop_pct / 100.0 {
+                return Some(ExitOrder {
+                    mint: *mint,
+                    sell_pct: 100,
+                    close_account: true,
+                    reason: "Trailing stop",
+                });
+            }
+        }
+
+        // 3a. Fhbh1D 45s hard time-stop for flat/dead positions (< +5% and never popped >= +18%)
+        if held_secs >= 45 && mult > 0.0 && mult < 1.05 && pos.peak_price_sol < entry_unit_price * 1.18 {
             return Some(ExitOrder {
                 mint: *mint,
                 sell_pct: 100,
@@ -154,17 +234,61 @@ impl ExitEngine {
             });
         }
 
-        if self.policy.max_hold_secs > 0 && held_secs >= self.policy.max_hold_secs {
+        // 3b. 5m time cap for non-runners (< +18% and never armed breakeven); let moonbags ride to max_hold_secs (26m)
+        if held_secs >= 300 && mult < 1.18 && !pos.breakeven_armed {
             return Some(ExitOrder {
                 mint: *mint,
                 sell_pct: 100,
                 close_account: true,
-                reason: "Time cap",
+                reason: "Time cap (5m)",
+            });
+        }
+        if policy.max_hold_secs > 0 && held_secs >= policy.max_hold_secs {
+            return Some(ExitOrder {
+                mint: *mint,
+                sell_pct: 100,
+                close_account: true,
+                reason: "Moonbag max hold",
             });
         }
 
-        // 3. Staged exit ladder steps (e.g. 15%, 33%, 100%)
-        for (idx, step) in self.policy.ladder.iter().enumerate() {
+        // 4. Instant Opening Take-Profit (+18% pop -> sell instant_tp_pct, e.g. 25%)
+        if !pos.instant_tp_fired && policy.instant_tp_pct > 0 && mult >= 1.18 {
+            pos.instant_tp_fired = true;
+            self.twap_state.insert(*mint, (now_secs, 0));
+            return Some(ExitOrder {
+                mint: *mint,
+                sell_pct: policy.instant_tp_pct,
+                close_account: policy.instant_tp_pct >= 100,
+                reason: "Instant TP1",
+            });
+        }
+
+        // 4b. Fhbh1D 15%-every-2s Exponential TWAP Drip while >= +18%, leaving a ~30% moonbag to trail
+        let rem_ratio = if pos.initial_tokens > 0.0 {
+            current_ui_tokens / pos.initial_tokens
+        } else {
+            1.0
+        };
+        if pos.instant_tp_fired && mult >= 1.18 && rem_ratio > 0.32 {
+            let mut twap = self.twap_state.entry(*mint).or_insert((pos.opened_at_secs, 0));
+            let (last_drip, drips) = *twap;
+            if drips < 6 && now_secs.saturating_sub(last_drip) >= 2 {
+                *twap = (now_secs, drips + 1);
+                return Some(ExitOrder {
+                    mint: *mint,
+                    sell_pct: 15,
+                    close_account: false,
+                    reason: "TWAP drip (15%/2s)",
+                });
+            }
+        }
+
+        // 5. Staged exit ladder steps (synced from Settings UI)
+        if pos.fired_steps.len() < policy.ladder.len() {
+            pos.fired_steps.resize(policy.ladder.len(), false);
+        }
+        for (idx, step) in policy.ladder.iter().enumerate() {
             if pos.fired_steps.get(idx).copied().unwrap_or(true) {
                 continue;
             }
@@ -179,21 +303,6 @@ impl ExitEngine {
                     sell_pct: step.sell_pct,
                     close_account: step.sell_pct >= 100,
                     reason: "Auto exit ladder",
-                });
-            }
-        }
-
-        // 3b. Fhbh1D 15%-every-2s Exponential TWAP Drip while >= +18% (up to 6 drips, leaving ~30% moonbag)
-        if mult >= 1.18 && held_secs >= 2 {
-            let mut twap = self.twap_state.entry(*mint).or_insert((pos.opened_at_secs, 0));
-            let (last_drip, drips) = *twap;
-            if drips < 6 && now_secs.saturating_sub(last_drip) >= 2 {
-                *twap = (now_secs, drips + 1);
-                return Some(ExitOrder {
-                    mint: *mint,
-                    sell_pct: 15,
-                    close_account: false,
-                    reason: "TWAP drip (15%/2s)",
                 });
             }
         }
@@ -269,8 +378,12 @@ mod tests {
                 is_token_2022: false,
                 opened_at_secs: 1_000,
                 opened_slot: 500,
-                entry_price_sol: 1e-6,
+                entry_price_sol: 1.0,
                 token_balance: 1_000_000,
+                initial_tokens: 1_000_000.0,
+                peak_price_sol: 1e-6,
+                breakeven_armed: false,
+                instant_tp_fired: true,
                 dex_accounts: vec![],
                 same_slot_tp_fired: false,
                 fired_steps: vec![],
@@ -280,15 +393,15 @@ mod tests {
         assert_eq!(tp.unwrap().sell_pct, 25);
 
         // 1.6x hits rung 0 (15%)
-        let r0 = engine.on_price_update(&mint, 1.6e-6, 30_000_000_000, 1_010).unwrap();
+        let r0 = engine.on_price_update(&mint, 1.6e-6, 1_000_000.0, 30_000_000_000, 1_010).unwrap();
         assert_eq!(r0.sell_pct, 15);
 
         // 2.6x hits rung 1 (33%)
-        let r1 = engine.on_price_update(&mint, 2.6e-6, 30_000_000_000, 1_020).unwrap();
+        let r1 = engine.on_price_update(&mint, 2.6e-6, 850_000.0, 30_000_000_000, 1_020).unwrap();
         assert_eq!(r1.sell_pct, 33);
 
         // Curve liquidity drop below 10 SOL triggers immediate 100% exit + close
-        let floor = engine.on_price_update(&mint, 2.0e-6, 5_000_000_000, 1_025).unwrap();
+        let floor = engine.on_price_update(&mint, 2.0e-6, 569_500.0, 5_000_000_000, 1_025).unwrap();
         assert_eq!(floor.sell_pct, 100);
         assert!(floor.close_account);
     }

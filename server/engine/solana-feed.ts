@@ -915,6 +915,12 @@ export class SolanaLiveFeed {
             if (held && held.pos.kolId === kolForExit.id) {
               this.closePaperPosition(mint, `Mirrored KOL sell (${kolForExit.label})`);
             }
+            if (this.cp.engineStatus === 'RUNNING') {
+              const liveHeld = this.cp.snapshot().positions.find((p) => !p.id.startsWith('paper_') && p.mint === mint);
+              if (liveHeld) {
+                this.cp.dispatchLiveMirrorSell(mint, kolForExit.label);
+              }
+            }
           }
         }
       }

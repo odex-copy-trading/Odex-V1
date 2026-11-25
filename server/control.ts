@@ -122,6 +122,15 @@ export class ControlPlane extends EventEmitter {
     });
   }
 
+  /** Forwards a live 100% forced mirror-exit sell over the bridge when a watched KOL dumps a held token. */
+  dispatchLiveMirrorSell(mint: string, kolLabel: string) {
+    if (this.engineStatus !== 'RUNNING' || this.engineSource !== 'bridge') return;
+    console.log(`[control] Mirroring KOL sell (${kolLabel}) -> forcing 100% live exit for ${mint.slice(0, 8)}...`);
+    void this.engine.command({ type: 'sell', mint, pct: 100 }).catch((e) => {
+      console.warn(`[control] mirror sell failed for ${mint.slice(0, 8)}: ${(e as Error).message}`);
+    });
+  }
+
   /** Updates Paper-mode positions & optional closed trade using real mainnet prices. */
   updatePaperState(positions: Position[], closed?: ClosedPosition, openedNew = false) {
     if (!this.rt) return;

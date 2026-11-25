@@ -29,7 +29,7 @@ use whal_engine::executor::{
     ExecutorRuntimeConfig, ExecutorService, ExecutorTelemetryEvent, HotWalletSigner, LanderConfig,
     LanderId, NonceAccount, NoncePool, ProgramIds, TxVersion, V1TransactionConfig,
 };
-use whal_engine::exits::{ExitEngine, ExitPolicy, SellTxParams};
+use whal_engine::exits::{ExitEngine, ExitPolicy, LadderStep, LadderTrigger, SellTxParams};
 use whal_engine::ingest::{
     types::{compute_opportunity_key, pubkey_from_bs58, StrategyId, TriggerEvent, TriggerKind, WSOL_MINT},
     GeyserConfig, IngestEngine, KolRule, LaunchFilterConfig, OpportunityBus, PubkeyBytes,
@@ -292,6 +292,58 @@ fn apply_bridge_config(
     info!(enabled_landers = enabled_count, buy_slot_ttl, "Hot-reloaded ExecutorRuntimeConfig from bridge");
 }
 
+fn apply_bridge_exits(cmd: &Value, exits: &ExitEngine) {
+    let cfg = cmd.get("config").unwrap_or(cmd);
+    let Some(ex) = cfg.get("exits") else { return };
+    let mut policy = ExitPolicy::default();
+    if let Some(v) = ex.get("instant_tp_pct").and_then(|v| v.as_u64()) {
+        policy.instant_tp_pct = v.min(100);
+        policy.same_slot_take_profit_pct = v.min(100);
+        policy.same_slot_take_profit_enabled = v > 0;
+    }
+    if let Some(v) = ex.get("stop_loss_pct").and_then(|v| v.as_f64()) {
+        policy.stop_loss_pct = v.clamp(0.0, 99.0);
+    }
+    if let Some(v) = ex.get("trailing_stop_pct").and_then(|v| v.as_f64()) {
+        policy.trailing_stop_pct = v.clamp(0.0, 95.0);
+    }
+    if let Some(cf) = ex.get("curve_floor") {
+        if let Some(en) = cf.get("enabled").and_then(|v| v.as_bool()) {
+            policy.curve_floor_enabled = en;
+        }
+        if let Some(sol) = cf.get("min_real_sol_reserves_sol").and_then(|v| v.as_f64()) {
+            policy.min_liquidity_floor_lamports = (sol.max(0.0) * 1_000_000_000.0) as u64;
+        }
+    }
+    if let Some(arr) = ex.get("ladder").and_then(|v| v.as_array()) {
+        let mut steps = Vec::new();
+        for item in arr {
+            let sell_pct = item.get("sell_pct").and_then(|v| v.as_u64()).unwrap_or(0).min(100);
+            let trig = item.get("trigger");
+            let kind = trig.and_then(|t| t.get("kind")).and_then(|v| v.as_str()).unwrap_or("");
+            let val = trig.and_then(|t| t.get("value")).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            if sell_pct > 0 && val > 0.0 {
+                let trigger = match kind {
+                    "time_secs" => LadderTrigger::TimeSecs(val as u64),
+                    _ => LadderTrigger::PnlMultiple(val),
+                };
+                steps.push(LadderStep { sell_pct, trigger });
+            }
+        }
+        if !steps.is_empty() {
+            policy.ladder = steps;
+        }
+    }
+    info!(
+        instant_tp_pct = policy.instant_tp_pct,
+        stop_loss_pct = policy.stop_loss_pct,
+        trailing_stop_pct = policy.trailing_stop_pct,
+        ladder_steps = policy.ladder.len(),
+        "Hot-reloaded ExitPolicy from bridge (1:1 Paper Mode parity)"
+    );
+    exits.update_policy(policy);
+}
+
 fn apply_kol_upsert(cmd: &Value, watchlist: &WatchlistCache) -> Result<(), String> {
     let k = cmd.get("kol").unwrap_or(cmd);
     let id = k.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -458,6 +510,7 @@ async fn connect_bridge_once(
                             }
                             "config.apply" => {
                                 apply_bridge_config(&cmd, &ctx.executor, &ctx.rpc_url, ctx.default_hot_wallet);
+                                apply_bridge_exits(&cmd, &ctx.exit_engine);
                                 (true, None)
                             }
                             "kol.upsert" => match apply_kol_upsert(&cmd, &ctx.watchlist) {
@@ -932,9 +985,10 @@ async fn main() {
                         continue;
                     }
                     let ui_tokens = raw_tok_bal as f64 / 1e6;
-                    let ui_price = if price_sol > 0.0 { price_sol } else { pos.entry_price_sol / ui_tokens };
+                    let init_toks = if pos.initial_tokens > 0.0 { pos.initial_tokens } else { ui_tokens };
+                    let ui_price = if price_sol > 0.0 { price_sol } else if init_toks > 0.0 { pos.entry_price_sol / init_toks } else { 0.0 };
                     if raw_tok_bal > 0 && price_sol > 0.0 {
-                        if let Some(order) = exit_mgr.on_price_update(&pos.mint, price_sol * ui_tokens, v_sol_lamports, now_secs) {
+                        if let Some(order) = exit_mgr.on_price_update(&pos.mint, price_sol, ui_tokens, v_sol_lamports, now_secs) {
                             info!(
                                 mint = %bs58::encode(&pos.mint).into_string(),
                                 sell_pct = order.sell_pct,
@@ -965,8 +1019,8 @@ async fn main() {
                                 is_token_2022: pos.is_token_2022,
                                 pre_balance: raw_tok_bal,
                                 sell_pct: order.sell_pct,
-                                min_quote_out: 1,
-                                min_liquidity_floor_lamports: 5_000_000_000,
+                                min_quote_out: 0,
+                                min_liquidity_floor_lamports: 0,
                                 current_slot: pos.opened_slot,
                                 close_on_full_exit: order.close_account,
                                 cpi_accounts,
@@ -985,9 +1039,9 @@ async fn main() {
                         "openedAt": pos.opened_at_secs * 1_000,
                         "openedSlot": pos.opened_slot,
                         "entrySol": pos.entry_price_sol,
-                        "initialTokens": ui_tokens,
+                        "initialTokens": init_toks,
                         "tokens": ui_tokens,
-                        "entryPrice": if ui_tokens > 0.0 { pos.entry_price_sol / ui_tokens } else { pos.entry_price_sol },
+                        "entryPrice": if init_toks > 0.0 { pos.entry_price_sol / init_toks } else { pos.entry_price_sol },
                         "price": ui_price,
                         "realizedSol": 0.0,
                         "pendingSell": Value::Null
