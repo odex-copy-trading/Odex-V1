@@ -49,6 +49,51 @@ pub fn build_protected_sell_instructions(p: &SellTxParams) -> Vec<InstructionSpe
         SPL_TOKEN_PROGRAM_ID
     };
 
+    let direct_native = p.sell_router_program == [0u8; 32]
+        || std::env::var("WHAL_DIRECT_NATIVE_DEX")
+            .ok()
+            .map(|v| matches!(v.trim(), "1" | "true" | "TRUE"))
+            .unwrap_or(false);
+
+    if direct_native {
+        // Direct native Pump.fun sell(amount, min_sol_output) — skips undeployed whal-sell-router & Lighthouse.
+        let sell_amount = if p.pre_balance > 0 {
+            ((p.pre_balance as u128 * p.sell_pct.min(100) as u128) / 100).max(1) as u64
+        } else {
+            1
+        };
+        // Pump.fun `sell` Anchor discriminator: sha256("global:sell")[..8]
+        const DISC_PUMPFUN_SELL: [u8; 8] = [0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
+        let mut native_data = Vec::with_capacity(24);
+        native_data.extend_from_slice(&DISC_PUMPFUN_SELL);
+        native_data.extend_from_slice(&sell_amount.to_le_bytes());
+        native_data.extend_from_slice(&p.min_quote_out.to_le_bytes());
+        // Pump.fun sell account order puts creator_vault(8) before token_program(9) compared to buy(8=token_prog, 9=creator_vault)
+        let mut native_accs = p.cpi_accounts.clone();
+        if p.venue == Venue::PumpFun && native_accs.len() >= 10 {
+            native_accs.swap(8, 9);
+        }
+        ixs.push(InstructionSpec {
+            label: "direct_native_dex_sell",
+            program_id: p.target_dex_program,
+            accounts: native_accs,
+            data: native_data,
+        });
+        if p.sell_pct >= 100 && p.close_on_full_exit {
+            ixs.push(InstructionSpec {
+                label: "token_close_account_rent_reclaim",
+                program_id: token_program,
+                accounts: vec![
+                    AccountMetaSpec { pubkey: p.bot_token_account, is_signer: false, is_writable: true },
+                    AccountMetaSpec { pubkey: p.hot_wallet, is_signer: false, is_writable: true },
+                    AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: false },
+                ],
+                data: vec![TOKEN_IX_CLOSE_ACCOUNT],
+            });
+        }
+        return ixs;
+    }
+
     // 1. Pre-sell atomic sell deduplication via Lighthouse (reverts duplicates with Custom(6011)).
     if p.pre_balance > 0 {
         ixs.push(assert_sell_dedupe_balance(

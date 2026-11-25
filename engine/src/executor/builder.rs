@@ -176,7 +176,7 @@ pub fn build_venue_cpi_accounts(
                 .iter()
                 .enumerate()
                 .map(|(i, &pk)| match i {
-                    1 | 3 | 4 | 9 => AccountMetaSpec { pubkey: pk, is_signer: false, is_writable: true },
+                    1 | 3 | 4 | 9 | 12 | 13 => AccountMetaSpec { pubkey: pk, is_signer: false, is_writable: true },
                     5 => AccountMetaSpec { pubkey: ephemeral_ata, is_signer: false, is_writable: true },
                     6 => AccountMetaSpec { pubkey: hot_wallet, is_signer: true, is_writable: true },
                     8 => AccountMetaSpec { pubkey: token_program, is_signer: false, is_writable: false },

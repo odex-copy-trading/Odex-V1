@@ -38,6 +38,25 @@ pub struct BurstFeedPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivePositionPayload {
+    pub id: String,
+    pub mint: String,
+    pub symbol: String,
+    pub venue: Venue,
+    pub kol_id: Option<String>,
+    pub opened_at: u64,
+    pub opened_slot: u64,
+    pub entry_sol: f64,
+    pub initial_tokens: f64,
+    pub tokens: f64,
+    pub entry_price: f64,
+    pub price: f64,
+    pub realized_sol: f64,
+    pub pending_sell: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum ExecutorTelemetryEvent {
     #[serde(rename = "burst_dispatched")]
@@ -54,5 +73,10 @@ pub enum ExecutorTelemetryEvent {
         outcome: &'static str,
         lander: Option<LanderId>,
         signature: Option<String>,
+    },
+    #[serde(rename = "position_updated")]
+    PositionUpdated {
+        ts: u64,
+        positions: Vec<LivePositionPayload>,
     },
 }

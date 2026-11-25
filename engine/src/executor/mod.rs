@@ -209,14 +209,19 @@ impl ExecutorService {
         if summary.winner.is_some() && !shadow {
             if let Some(exits) = &self.exit_engine {
                 let high_conviction = matches!(trigger.kind, TriggerKind::KolBuy { .. });
-                let token_program = builder::SPL_TOKEN_PROGRAM_ID;
+                let is_token_2022 = trigger.dex_accounts.contains(&TOKEN_2022_PROGRAM_ID);
+                let token_program = if is_token_2022 {
+                    TOKEN_2022_PROGRAM_ID
+                } else {
+                    SPL_TOKEN_PROGRAM_ID
+                };
                 let tp_order = exits.register_position(
                     crate::exits::ManagedPosition {
                         mint: trigger.mint,
                         pool_or_curve: trigger.pool_pda,
                         bot_token_account: ephemeral_ata,
                         venue: trigger.venue,
-                        is_token_2022: false,
+                        is_token_2022,
                         opened_at_secs: ts / 1_000,
                         opened_slot: trigger.trigger_slot,
                         entry_price_sol: size_sol,
@@ -227,39 +232,74 @@ impl ExecutorService {
                     },
                     high_conviction,
                 );
-                // Fhbh1D same-slot 25% opening TP1 via Program #4 percentage sell router
-                if let Some(order) = tp_order {
-                    let progs = self.fanout.programs();
-                    let target_dex = match trigger.venue {
-                        Venue::PumpFun => progs.pumpfun_program,
-                        Venue::PumpSwap => progs.pumpswap_program,
-                        Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => progs.launchlab_program,
-                    };
-                    let cpi_accounts = builder::build_venue_cpi_accounts(
-                        trigger.venue,
-                        &trigger.dex_accounts,
-                        cfg.hot_wallet,
-                        ephemeral_ata,
-                        None,
-                        token_program,
-                    );
-                    let sell_params = crate::exits::SellTxParams {
-                        sell_router_program: progs.sell_router_program,
-                        target_dex_program: target_dex,
-                        venue: trigger.venue,
-                        hot_wallet: cfg.hot_wallet,
-                        bot_token_account: ephemeral_ata,
-                        pool_or_curve: trigger.pool_pda,
-                        is_token_2022: false,
-                        pre_balance: 0,
-                        sell_pct: order.sell_pct,
-                        min_quote_out: 1,
-                        min_liquidity_floor_lamports: 5_000_000_000,
-                        current_slot: trigger.trigger_slot,
-                        close_on_full_exit: order.close_account,
-                        cpi_accounts,
-                    };
-                    let _ = self.execute_sell(sell_params).await;
+                // Emit live open positions to Step 3 control plane so Overview Positions tab updates immediately.
+                let live_positions: Vec<telemetry::LivePositionPayload> = exits
+                    .snapshot_positions()
+                    .into_iter()
+                    .map(|p| {
+                        let m = pubkey_to_bs58(&p.mint);
+                        telemetry::LivePositionPayload {
+                            id: format!("live_{}", &m[..m.len().min(12)]),
+                            symbol: m[..m.len().min(5)].to_string(),
+                            mint: m,
+                            venue: p.venue,
+                            kol_id: kol_id.clone(),
+                            opened_at: p.opened_at_secs * 1_000,
+                            opened_slot: p.opened_slot,
+                            entry_sol: p.entry_price_sol,
+                            initial_tokens: 1.0,
+                            tokens: 1.0,
+                            entry_price: p.entry_price_sol,
+                            price: p.entry_price_sol,
+                            realized_sol: 0.0,
+                            pending_sell: None,
+                        }
+                    })
+                    .collect();
+                let _ = self.telemetry_tx.try_send(ExecutorTelemetryEvent::PositionUpdated {
+                    ts,
+                    positions: live_positions,
+                });
+
+                // Fhbh1D same-slot 25% opening TP1 via Program #4 percentage sell router (skipped in direct native mode until token balance is read)
+                let direct_native = std::env::var("WHAL_DIRECT_NATIVE_DEX")
+                    .ok()
+                    .map(|v| matches!(v.trim(), "1" | "true" | "TRUE"))
+                    .unwrap_or(false);
+                if !direct_native {
+                    if let Some(order) = tp_order {
+                        let progs = self.fanout.programs();
+                        let target_dex = match trigger.venue {
+                            Venue::PumpFun => progs.pumpfun_program,
+                            Venue::PumpSwap => progs.pumpswap_program,
+                            Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => progs.launchlab_program,
+                        };
+                        let cpi_accounts = builder::build_venue_cpi_accounts(
+                            trigger.venue,
+                            &trigger.dex_accounts,
+                            cfg.hot_wallet,
+                            ephemeral_ata,
+                            None,
+                            token_program,
+                        );
+                        let sell_params = crate::exits::SellTxParams {
+                            sell_router_program: progs.sell_router_program,
+                            target_dex_program: target_dex,
+                            venue: trigger.venue,
+                            hot_wallet: cfg.hot_wallet,
+                            bot_token_account: ephemeral_ata,
+                            pool_or_curve: trigger.pool_pda,
+                            is_token_2022,
+                            pre_balance: 0,
+                            sell_pct: order.sell_pct,
+                            min_quote_out: 1,
+                            min_liquidity_floor_lamports: 5_000_000_000,
+                            current_slot: trigger.trigger_slot,
+                            close_on_full_exit: order.close_account,
+                            cpi_accounts,
+                        };
+                        let _ = self.execute_sell(sell_params).await;
+                    }
                 }
             }
         }

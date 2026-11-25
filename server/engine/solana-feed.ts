@@ -3,6 +3,7 @@
 // - Real mainnet Pump.fun new token launches (exact mint, symbol, dev buy SOL, signature) via PumpPortal live stream
 // - Real SOL/USD price + real hot-wallet SOL balance via RPC getBalance
 // Automatically yields whenever the Rust whal-engine connects to /internal/engine.
+import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import type { ClosedPosition, FeedEvent, Position } from '../../lib/types';
 import type { ControlPlane } from '../control';
@@ -12,6 +13,56 @@ const PUBLIC_SOLANA_WS = 'wss://api.mainnet-beta.solana.com';
 const PUBLIC_SOLANA_HTTP = 'https://api.mainnet-beta.solana.com';
 const PUMPPORTAL_WS = 'wss://pumpportal.fun/api/data';
 const PUMPFUN_LATEST_API = 'https://frontend-api-v3.pump.fun/coins?offset=0&limit=10&sort=created_timestamp&order=DESC&includeNsfw=false';
+const PUMPFUN_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+const B58_ALPHA = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const ED25519_P = (1n << 255n) - 19n;
+const edMod = (a: bigint) => ((a % ED25519_P) + ED25519_P) % ED25519_P;
+const edPow = (b: bigint, e: bigint) => { let r = 1n; b = edMod(b); while (e > 0n) { if (e & 1n) r = edMod(r * b); b = edMod(b * b); e >>= 1n; } return r; };
+const ED25519_D = edMod(-121665n * edPow(121666n, ED25519_P - 2n));
+function b58Decode(s: string): Buffer {
+  let n = 0n;
+  for (const c of s) { const i = B58_ALPHA.indexOf(c); if (i < 0) return Buffer.alloc(0); n = n * 58n + BigInt(i); }
+  const bytes: number[] = [];
+  while (n > 0n) { bytes.push(Number(n & 0xffn)); n >>= 8n; }
+  for (const c of s) { if (c === '1') bytes.push(0); else break; }
+  const raw = Buffer.from(bytes.reverse());
+  return raw.length < 32 ? Buffer.concat([Buffer.alloc(32 - raw.length), raw]) : raw;
+}
+function b58Encode(buf: Buffer): string {
+  let n = 0n;
+  for (const b of buf) n = (n << 8n) + BigInt(b);
+  let out = '';
+  while (n > 0n) { out = B58_ALPHA[Number(n % 58n)] + out; n /= 58n; }
+  for (const b of buf) { if (b === 0) out = '1' + out; else break; }
+  return out || '1';
+}
+function isOnEd25519Curve(buf: Buffer): boolean {
+  const b = Buffer.from(buf);
+  b[31] &= 0x7f;
+  let y = 0n;
+  for (let i = 31; i >= 0; i--) y = (y << 8n) + BigInt(b[i]);
+  if (y >= ED25519_P) return false;
+  const y2 = edMod(y * y);
+  const u = edMod(y2 - 1n);
+  const v = edMod(ED25519_D * y2 + 1n);
+  const x2 = edMod(u * edPow(v, ED25519_P - 2n));
+  if (x2 === 0n) return (buf[31] & 0x80) === 0;
+  return edPow(x2, (ED25519_P - 1n) >> 1n) === 1n;
+}
+function deriveUserVolumeAccumulator(hotWallet: string): string | null {
+  if (!hotWallet) return null;
+  const userBuf = b58Decode(hotWallet);
+  const progBuf = b58Decode(PUMPFUN_PROGRAM);
+  if (userBuf.length !== 32 || progBuf.length !== 32) return null;
+  const seed = Buffer.from('user_volume_accumulator');
+  const pdaMarker = Buffer.from('ProgramDerivedAddress');
+  for (let bump = 255; bump >= 0; bump--) {
+    const h = crypto.createHash('sha256').update(seed).update(userBuf).update(Buffer.from([bump])).update(progBuf).update(pdaMarker).digest();
+    if (!isOnEd25519Curve(h)) return b58Encode(h);
+  }
+  return null;
+}
+
 const ZERO_REVERTS = { duplicate: 0, mutex: 0, kolNotLanded: 0, slippage: 0, expired: 0 };
 
 const IGNORED_MINTS = new Set([
@@ -543,11 +594,10 @@ export class SolanaLiveFeed {
         this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, undefined, msg.creator);
       } else if (this.cp.engineStatus === 'RUNNING' && msg.bondingCurveKey) {
         if (normSym) this.recentBoughtSymbols.set(normSym, ts);
-        this.cp.dispatchLiveTrigger({
-          kind: 'launch',
+        void this.dispatchPumpLaunchLive({
           venue: ev.venue,
           mint: msg.mint,
-          poolPda: msg.bondingCurveKey,
+          bondingCurveKey: msg.bondingCurveKey,
           slot,
           buySizeSol: cfg.strategy.default_buy_sol || 0.1,
           maxCurveReserveSol: cfg.strategy.max_curve_reserve_sol,
@@ -556,11 +606,96 @@ export class SolanaLiveFeed {
           symbol,
           name: msg.name,
           uri: msg.uri,
-          dexAccounts: [],
         });
       }
     }
     if (!ev.image && msg.uri) void this.hydrateTokenImage(ev, msg.uri, msg.signature ?? null);
+  }
+
+  /** Fetches the exact 16-18 mainnet Pump.fun buy accounts (including Token-2022 vs SPL Token at [8]) before dispatching live. */
+  private async dispatchPumpLaunchLive(p: {
+    venue: FeedEvent['venue'];
+    mint: string;
+    bondingCurveKey: string;
+    slot: number;
+    buySizeSol: number;
+    maxCurveReserveSol: number;
+    creator?: string;
+    devBuySol: number;
+    symbol: string;
+    name?: string;
+    uri?: string;
+  }) {
+    const rpcUrl = this.usePublicSlotFallback ? PUBLIC_SOLANA_HTTP : this.endpoints.httpUrl;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 2000);
+      const sigRes = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getSignaturesForAddress',
+          params: [p.bondingCurveKey, { limit: 2, commitment: 'confirmed' }],
+        }),
+      });
+      clearTimeout(t);
+      if (!sigRes.ok) return;
+      const sigJson = await sigRes.json() as { result?: Array<{ signature?: string; err?: unknown }> };
+      const sig = (sigJson.result ?? []).find((s) => s.signature && s.err == null)?.signature;
+      if (!sig) return;
+
+      const ctrl2 = new AbortController();
+      const t2 = setTimeout(() => ctrl2.abort(), 2000);
+      const txRes = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        signal: ctrl2.signal,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getTransaction',
+          params: [sig, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
+        }),
+      });
+      clearTimeout(t2);
+      if (!txRes.ok) return;
+      const txJson = await txRes.json() as {
+        result?: {
+          meta?: { innerInstructions?: Array<{ instructions?: Array<{ programId?: string; accounts?: string[] }> }> };
+          transaction?: { message?: { instructions?: Array<{ programId?: string; accounts?: string[] }> } };
+        } | null;
+      };
+      const allIx = [
+        ...(txJson.result?.transaction?.message?.instructions ?? []),
+        ...(txJson.result?.meta?.innerInstructions ?? []).flatMap((g) => g.instructions ?? []),
+      ];
+      const pumpIx = [...allIx].reverse().find((ix) => ix.programId === PUMPFUN_PROGRAM && Array.isArray(ix.accounts) && ix.accounts.length >= 12);
+      if (!pumpIx?.accounts) return;
+
+      const dexAccounts = [...pumpIx.accounts];
+      const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
+      const userVolPda = deriveUserVolumeAccumulator(hotWallet);
+      if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
+
+      this.cp.dispatchLiveTrigger({
+        kind: 'launch',
+        venue: p.venue,
+        mint: p.mint,
+        poolPda: p.bondingCurveKey,
+        slot: p.slot,
+        buySizeSol: p.buySizeSol,
+        maxCurveReserveSol: p.maxCurveReserveSol,
+        creator: p.creator,
+        devBuySol: p.devBuySol,
+        symbol: p.symbol,
+        name: p.name,
+        uri: p.uri,
+        dexAccounts,
+      });
+    } catch { /* ignore transient RPC timeout */ }
   }
 
   private async hydrateTokenImage(ev: FeedEvent, rawUri: string, sig: string | null) {
@@ -680,6 +815,7 @@ export class SolanaLiveFeed {
               postBalances?: number[];
               preTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
               postTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
+              innerInstructions?: Array<{ instructions?: Array<{ programId?: string; accounts?: string[] }> }>;
             };
             transaction?: {
             message?: {
@@ -756,10 +892,18 @@ export class SolanaLiveFeed {
       const kol = this.cp.snapshot().kols.find((k) => k.enabled && k.pubkey === kolPubkey);
       if (!kol || solSpent < kol.triggerMargin) return;
 
-      const dexIx = (tx.transaction?.message?.instructions ?? []).find(
+      const allKolIx = [
+        ...(tx.transaction?.message?.instructions ?? []),
+        ...(tx.meta.innerInstructions ?? []).flatMap((g) => g.instructions ?? []),
+      ];
+      const dexIx = [...allKolIx].reverse().find(
         (ix) => ix.programId && Array.isArray(ix.accounts) && ix.accounts.length >= 10 && DEX_PROGRAM_VENUES.some(([pid]) => pid === ix.programId),
       );
-      const dexAccounts = dexIx?.accounts ?? [];
+      const dexAccounts = dexIx?.accounts ? [...dexIx.accounts] : [];
+      if (dexIx?.programId === PUMPFUN_PROGRAM && dexAccounts.length > 13) {
+        const userVolPda = deriveUserVolumeAccumulator(this.cp.configState().config.wallets.hot_wallet_pubkey);
+        if (userVolPda) dexAccounts[13] = userVolPda;
+      }
       const poolPda = dexAccounts[3] ?? dexAccounts[0] ?? boughtMint;
       const entryPriceSol = solSpent / boughtTokens;
       this.onKolBuySignal(
