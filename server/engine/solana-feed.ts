@@ -672,7 +672,14 @@ export class SolanaLiveFeed {
         ...(txJson.result?.transaction?.message?.instructions ?? []),
         ...(txJson.result?.meta?.innerInstructions ?? []).flatMap((g) => g.instructions ?? []),
       ];
-      const pumpIx = [...allIx].reverse().find((ix) => ix.programId === PUMPFUN_PROGRAM && Array.isArray(ix.accounts) && ix.accounts.length >= 12);
+      const pumpIx = [...allIx].reverse().find(
+        (ix) =>
+          ix.programId === PUMPFUN_PROGRAM &&
+          Array.isArray(ix.accounts) &&
+          ix.accounts.length >= 12 &&
+          ix.accounts[2] === p.mint &&
+          ix.accounts[3] === p.bondingCurveKey,
+      );
       if (!pumpIx?.accounts) return;
 
       const dexAccounts = [...pumpIx.accounts];
