@@ -602,11 +602,12 @@ export class SolanaLiveFeed {
       } else if (this.cp.engineStatus === 'RUNNING' && msg.bondingCurveKey) {
         const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));
         if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
-        if (normSym) this.recentBoughtSymbols.set(normSym, ts);
         void this.dispatchPumpLaunchLive({
           venue: ev.venue,
           mint: msg.mint,
           bondingCurveKey: msg.bondingCurveKey,
+          signature: msg.signature,
+          normSym,
           slot,
           buySizeSol: cfg.strategy.default_buy_sol || 0.1,
           maxCurveReserveSol: cfg.strategy.max_curve_reserve_sol,
@@ -626,6 +627,8 @@ export class SolanaLiveFeed {
     venue: FeedEvent['venue'];
     mint: string;
     bondingCurveKey: string;
+    signature?: string;
+    normSym?: string;
     slot: number;
     buySizeSol: number;
     maxCurveReserveSol: number;
@@ -637,9 +640,9 @@ export class SolanaLiveFeed {
   }) {
     // Always use primary paid Helius HTTP RPC for live account lookup (never fall back to rate-limited public mainnet-beta HTTP).
     const rpcUrl = this.endpoints.httpUrl;
-    const fetchSigs = async () => {
+    const fetchSigs = async (): Promise<string[]> => {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 2000);
+      const t = setTimeout(() => ctrl.abort(), 1800);
       try {
         const sigRes = await fetch(rpcUrl, {
           method: 'POST',
@@ -655,64 +658,80 @@ export class SolanaLiveFeed {
         if (!sigRes.ok) return [];
         const sigJson = await sigRes.json() as { result?: Array<{ signature?: string; err?: unknown }> };
         return (sigJson.result ?? []).filter((s) => s.signature && s.err == null).map((s) => s.signature!);
+      } catch {
+        return [];
+      } finally {
+        clearTimeout(t);
+      }
+    };
+
+    const fetchPumpBuyAccounts = async (sig: string): Promise<string[] | null> => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 1800);
+      try {
+        const txRes = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'getTransaction',
+            params: [sig, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
+          }),
+        });
+        if (!txRes.ok) return null;
+        const txJson = await txRes.json() as {
+          result?: {
+            meta?: { innerInstructions?: Array<{ instructions?: Array<{ programId?: string; accounts?: string[] }> }> };
+            transaction?: { message?: { instructions?: Array<{ programId?: string; accounts?: string[] }> } };
+          } | null;
+        };
+        if (!txJson.result) return null;
+        const allIx = [
+          ...(txJson.result.transaction?.message?.instructions ?? []),
+          ...(txJson.result.meta?.innerInstructions ?? []).flatMap((g) => g.instructions ?? []),
+        ];
+        const pumpIx = [...allIx].reverse().find(
+          (ix) =>
+            ix.programId === PUMPFUN_PROGRAM &&
+            Array.isArray(ix.accounts) &&
+            ix.accounts.length >= 16 &&
+            ix.accounts[2] === p.mint &&
+            ix.accounts[3] === p.bondingCurveKey &&
+            ix.accounts[15] === 'pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ',
+        );
+        return pumpIx?.accounts ?? null;
+      } catch {
+        return null;
       } finally {
         clearTimeout(t);
       }
     };
 
     try {
-      let sigs = await fetchSigs();
-      if (sigs.length === 0) {
-        await new Promise((r) => setTimeout(r, 400));
-        sigs = await fetchSigs();
-      }
-      if (sigs.length === 0) return;
-
+      // Retry across 0ms -> 350ms -> 850ms -> 1500ms so launches are caught the moment Helius confirms them.
       let pumpIxAccounts: string[] | null = null;
-      for (const sig of sigs.slice(0, 3)) {
-        const ctrl2 = new AbortController();
-        const t2 = setTimeout(() => ctrl2.abort(), 2000);
-        try {
-          const txRes = await fetch(rpcUrl, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            signal: ctrl2.signal,
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 1,
-              method: 'getTransaction',
-              params: [sig, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
-            }),
-          });
-          if (!txRes.ok) continue;
-          const txJson = await txRes.json() as {
-            result?: {
-              meta?: { innerInstructions?: Array<{ instructions?: Array<{ programId?: string; accounts?: string[] }> }> };
-              transaction?: { message?: { instructions?: Array<{ programId?: string; accounts?: string[] }> } };
-            } | null;
-          };
-          const allIx = [
-            ...(txJson.result?.transaction?.message?.instructions ?? []),
-            ...(txJson.result?.meta?.innerInstructions ?? []).flatMap((g) => g.instructions ?? []),
-          ];
-          const pumpIx = [...allIx].reverse().find(
-            (ix) =>
-              ix.programId === PUMPFUN_PROGRAM &&
-              Array.isArray(ix.accounts) &&
-              ix.accounts.length >= 16 &&
-              ix.accounts[2] === p.mint &&
-              ix.accounts[3] === p.bondingCurveKey &&
-              ix.accounts[15] === 'pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ',
-          );
-          if (pumpIx?.accounts) {
-            pumpIxAccounts = pumpIx.accounts;
-            break;
-          }
-        } finally {
-          clearTimeout(t2);
+      const waitsMs = [0, 350, 500, 650];
+      for (const wait of waitsMs) {
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        if (p.signature) {
+          pumpIxAccounts = await fetchPumpBuyAccounts(p.signature);
+          if (pumpIxAccounts) break;
         }
+        const sigs = await fetchSigs();
+        for (const sig of sigs.slice(0, 2)) {
+          if (sig === p.signature) continue;
+          pumpIxAccounts = await fetchPumpBuyAccounts(sig);
+          if (pumpIxAccounts) break;
+        }
+        if (pumpIxAccounts) break;
       }
       if (!pumpIxAccounts) return;
+
+      const realOpen = this.cp.snapshot().positions.filter((x) => !x.id.startsWith('paper_'));
+      if (realOpen.length >= 5 || realOpen.some((x) => x.mint === p.mint)) return;
+      if (p.normSym) this.recentBoughtSymbols.set(p.normSym, Date.now());
 
       // Preserve all remaining accounts from the matched Pump.fun Buy instruction
       // (17 accounts for standard coins, 18 accounts including buyback_fee_recipient for Buyback coins).
