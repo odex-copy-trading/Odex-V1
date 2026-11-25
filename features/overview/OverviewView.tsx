@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { Snowflake, Upload, X } from '@/components/icons';
-import { Badge, Skeleton, cx } from '@/components/ui';
+import { Skeleton, cx } from '@/components/ui';
 import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
 import { kolLabel, portfolioUsd, useCommand, useTerminal } from '@/lib/store';
 import { fmtSol, fmtUsd, tone } from '@/lib/format';
@@ -135,7 +135,7 @@ export function OverviewView() {
     positions: {
       title: 'Active positions',
       meta: <><span><b className="font-semibold text-fg">{open.length}</b> open</span><Sep /><span>Value <b className="font-semibold tabular-nums text-fg">{fmtUsd(openValue * px)}</b></span><Sep /><span>Unrealized <b className={cx('font-semibold tabular-nums', tone(unrealSol))}>{fmtUsd(unrealSol * px, true)}</b> <span className="tabular-nums">({fmtSol(unrealSol, 2, true)} SOL)</span></span></>,
-      action: engineOnline ? undefined : <Badge tone="warn">Engine offline</Badge>,
+      action: engineOnline ? undefined : <span className="text-[0.84rem] font-medium text-warn">Engine offline</span>,
     },
     closed: {
       title: 'Closed positions',
