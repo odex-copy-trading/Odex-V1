@@ -755,7 +755,7 @@ export class SolanaLiveFeed {
     }
 
     const ts = Date.now();
-    const slot = this.lastSlot;
+    const slot = msg.slotOverride || this.cp.currentSlot() || this.lastSlot;
     const symbol = (msg.symbol || msg.mint.slice(0, 4)).trim().slice(0, 16);
     const sizeSol = typeof msg.solAmount === 'number' && Number.isFinite(msg.solAmount) ? +msg.solAmount.toFixed(4) : 0;
     const normImg = msg.image?.trim()
@@ -1358,7 +1358,7 @@ export class SolanaLiveFeed {
     if (msg.vSolInBondingCurve && msg.vSolInBondingCurve > kol.maxCurveReserveSol) return;
 
     const ts = Date.now();
-    const slot = msg.slotOverride ?? this.lastSlot;
+    const slot = msg.slotOverride ?? (this.cp.currentSlot() || this.lastSlot);
     const symbol = (msg.symbol || msg.mint.slice(0, 4)).trim().slice(0, 16);
     const venue: FeedEvent['venue'] = msg.venueOverride ?? (msg.pool === 'raydium' ? 'Raydium LaunchLab' : 'Pump.fun');
     const ev: FeedEvent = {
@@ -1482,7 +1482,7 @@ export class SolanaLiveFeed {
       venue: ev.venue,
       kolId: ev.kolId,
       openedAt: ev.ts,
-      openedSlot: ev.slot,
+      openedSlot: ev.slot || this.cp.currentSlot() || this.lastSlot,
       entrySol,
       initialTokens: tokens,
       tokens,
@@ -1754,6 +1754,7 @@ export class SolanaLiveFeed {
       proceedsSol: totalProceeds,
       solUsd: this.solUsd || 0,
       exitReason,
+      buySlot: entry.pos.openedSlot > 0 ? entry.pos.openedSlot : null,
     };
     if (this.pumpWs?.readyState === WebSocket.OPEN) {
       this.pumpWs.send(JSON.stringify({ method: 'unsubscribeTokenTrade', keys: [mint] }));

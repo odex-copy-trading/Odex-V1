@@ -79,6 +79,7 @@ export class ControlPlane extends EventEmitter {
 
   get engineSource(): EngineSource { return this.rt ? this.engine.source : 'disconnected'; }
   get engineStatus(): EngineRuntime['engine']['status'] { return this.rt?.engine.status ?? 'PAUSED'; }
+  currentSlot(): number { return Math.max(this.rt?.chain.slot ?? 0, this.liveChain.slot ?? 0); }
 
   /** Estimates real Solana tx + priority + SWQoS lander tip + duplicate-revert fee in SOL from current Settings. */
   estimateExecutionFeeSol(): number {
@@ -142,6 +143,7 @@ export class ControlPlane extends EventEmitter {
     if (closed) {
       this.rt.closed = [closed, ...this.rt.closed.filter((c) => c.id !== closed.id)].slice(0, 5000);
       this.db.insertClosed(closed);
+      void this.resolveClosedLandingSlot(closed.id, closed.mint, closed.buySlot ?? null);
       this.cloud?.syncClosed(closed);
       const net = closed.proceedsSol - closed.entrySol;
       this.rt.session = { ...this.rt.session, realizedSol: +(this.rt.session.realizedSol + net).toFixed(6) };
@@ -336,11 +338,13 @@ export class ControlPlane extends EventEmitter {
   private publish(e: TelemetryEvent) { this.emit('telemetry', e); }
   private publishConfig() { this.publish({ type: 'config_updated', ts: Date.now(), config: this.configState() }); }
 
-  /** Background non-blocking resolver: records exact real on-chain buySlot + slotDelta on closed live trades. */
-  private async resolveClosedLandingSlot(closedId: string, mint: string) {
+  /** Background non-blocking resolver: records exact real on-chain buySlot + slotDelta on closed live & paper trades. */
+  private async resolveClosedLandingSlot(closedId: string, mint: string, knownBuySlot?: number | null) {
     const wallet = this.cfg.config.wallets.hot_wallet_pubkey;
     const rpcUrl = this.cfg.config.network.rpc_primary_url || 'https://api.mainnet-beta.solana.com';
-    if (!wallet || !mint) return;
+    if (!mint) return;
+    const isPaper = typeof knownBuySlot === 'number' && knownBuySlot > 0;
+    if (!isPaper && !wallet) return;
     const rpc = async <T>(method: string, params: unknown[]): Promise<T | null> => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 8_000);
@@ -361,25 +365,27 @@ export class ControlPlane extends EventEmitter {
       }
     };
     try {
-      // 1. Find earliest confirmed BUY tx for `mint` in our wallet's recent 20 signatures
-      const wsigs = await rpc<Array<{ signature: string; slot: number; err: unknown }>>('getSignaturesForAddress', [wallet, { limit: 20 }]);
-      if (!wsigs?.length) return;
-      let buySlot: number | null = null;
-      for (const s of wsigs) {
-        if (s.err !== null) continue;
-        const tx = await rpc<{
-          slot?: number;
-          meta?: {
-            err?: unknown;
-            preTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
-            postTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
-          };
-        }>('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]);
-        if (!tx?.meta || tx.meta.err !== null) continue;
-        const pre = (tx.meta.preTokenBalances ?? []).find((b) => b.owner === wallet && b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
-        const post = (tx.meta.postTokenBalances ?? []).find((b) => b.owner === wallet && b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
-        if (post > pre && typeof tx.slot === 'number') {
-          buySlot = buySlot === null ? tx.slot : Math.min(buySlot, tx.slot);
+      let buySlot: number | null = isPaper ? knownBuySlot! : null;
+      if (buySlot === null) {
+        // 1. Live mode: find earliest confirmed BUY tx for `mint` in our wallet's recent 20 signatures
+        const wsigs = await rpc<Array<{ signature: string; slot: number; err: unknown }>>('getSignaturesForAddress', [wallet, { limit: 20 }]);
+        if (!wsigs?.length) return;
+        for (const s of wsigs) {
+          if (s.err !== null) continue;
+          const tx = await rpc<{
+            slot?: number;
+            meta?: {
+              err?: unknown;
+              preTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
+              postTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
+            };
+          }>('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]);
+          if (!tx?.meta || tx.meta.err !== null) continue;
+          const pre = (tx.meta.preTokenBalances ?? []).find((b) => b.owner === wallet && b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
+          const post = (tx.meta.postTokenBalances ?? []).find((b) => b.owner === wallet && b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
+          if (post > pre && typeof tx.slot === 'number') {
+            buySlot = buySlot === null ? tx.slot : Math.min(buySlot, tx.slot);
+          }
         }
       }
       if (buySlot === null) return;
@@ -400,12 +406,13 @@ export class ControlPlane extends EventEmitter {
         }
         before = msigs[msigs.length - 1].signature;
       }
-      const slotDelta = exactLaunch && launchSlot !== null && buySlot >= launchSlot ? buySlot - launchSlot : null;
-      this.db.updateClosedSlot(closedId, buySlot, slotDelta);
+      const finalBuySlot = exactLaunch && launchSlot !== null && isPaper ? Math.max(buySlot, launchSlot) : buySlot;
+      const slotDelta = exactLaunch && launchSlot !== null && finalBuySlot >= launchSlot ? finalBuySlot - launchSlot : null;
+      this.db.updateClosedSlot(closedId, finalBuySlot, slotDelta);
       if (this.rt) {
         const idx = this.rt.closed.findIndex((c) => c.id === closedId);
         if (idx >= 0) {
-          const updated = { ...this.rt.closed[idx], buySlot, slotDelta };
+          const updated = { ...this.rt.closed[idx], buySlot: finalBuySlot, slotDelta };
           this.rt.closed[idx] = updated;
           this.publish({ type: 'position_updated', ts: Date.now(), positions: this.rt.positions, closed: updated });
         }
@@ -610,9 +617,11 @@ export class ControlPlane extends EventEmitter {
           proceedsSol: +totalProceeds.toFixed(6),
           solUsd: r.balances.solUsd || this.liveBalances.solUsd || 0,
           exitReason: 'Manual paper sell (100%)',
+          buySlot: pos.openedSlot > 0 ? pos.openedSlot : null,
         };
         r.closed = [closed, ...r.closed].slice(0, 5000);
         this.db.insertClosed(closed);
+        void this.resolveClosedLandingSlot(closed.id, closed.mint, closed.buySlot ?? null);
         this.cloud?.syncClosed(closed);
         const net = closed.proceedsSol - closed.entrySol;
         r.session = { ...r.session, realizedSol: +(r.session.realizedSol + net).toFixed(6) };
