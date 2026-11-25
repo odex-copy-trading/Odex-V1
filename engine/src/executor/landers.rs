@@ -239,18 +239,8 @@ impl LanderFanOut {
 
                 let is_token_2022_mint = trigger.dex_accounts.contains(&TOKEN_2022_PROGRAM_ID);
                 let use_standalone_guard_for_pumpswap = trigger.venue == Venue::PumpSwap;
-                // Safe slippage floor: for Pump.fun 0-block launches (known initial 30 SOL / 1.073B curve),
-                // compute AMM min_tokens_out with a 12% slippage tolerance; otherwise keep 1 so valid KOL fills never falsely revert.
-                let min_tokens_out = match (&trigger.venue, &trigger.kind) {
-                    (Venue::PumpFun, TriggerKind::ZeroBlockLaunch { dev_buy_lamports, .. }) => {
-                        let base_v_sol: u128 = 30_000_000_000u128.saturating_add(*dev_buy_lamports as u128);
-                        let base_v_tok: u128 = 1_073_000_000_000_000u128; // 1.073B tokens (6 decimals)
-                        let buy_lamports: u128 = 500_000_000; // conservative 0.5 SOL floor reference
-                        let est_out = (base_v_tok.saturating_mul(buy_lamports)) / base_v_sol.saturating_add(buy_lamports);
-                        ((est_out * 88) / 100).max(1) as u64
-                    }
-                    _ => 1,
-                };
+                // `buy_exact_sol_in` strictly caps SOL spend at buy_size; keep min_tokens_out = 1 so small (0.05-0.3 SOL) test buys never falsely revert on slippage.
+                let min_tokens_out: u64 = 1;
 
                 let params = BuildVariantParams {
                     version,

@@ -627,62 +627,83 @@ export class SolanaLiveFeed {
     uri?: string;
   }) {
     const rpcUrl = this.usePublicSlotFallback ? PUBLIC_SOLANA_HTTP : this.endpoints.httpUrl;
-    try {
+    const fetchSigs = async () => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 2000);
-      const sigRes = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        signal: ctrl.signal,
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getSignaturesForAddress',
-          params: [p.bondingCurveKey, { limit: 2, commitment: 'confirmed' }],
-        }),
-      });
-      clearTimeout(t);
-      if (!sigRes.ok) return;
-      const sigJson = await sigRes.json() as { result?: Array<{ signature?: string; err?: unknown }> };
-      const sig = (sigJson.result ?? []).find((s) => s.signature && s.err == null)?.signature;
-      if (!sig) return;
+      try {
+        const sigRes = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'getSignaturesForAddress',
+            params: [p.bondingCurveKey, { limit: 4, commitment: 'confirmed' }],
+          }),
+        });
+        if (!sigRes.ok) return [];
+        const sigJson = await sigRes.json() as { result?: Array<{ signature?: string; err?: unknown }> };
+        return (sigJson.result ?? []).filter((s) => s.signature && s.err == null).map((s) => s.signature!);
+      } finally {
+        clearTimeout(t);
+      }
+    };
 
-      const ctrl2 = new AbortController();
-      const t2 = setTimeout(() => ctrl2.abort(), 2000);
-      const txRes = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        signal: ctrl2.signal,
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getTransaction',
-          params: [sig, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
-        }),
-      });
-      clearTimeout(t2);
-      if (!txRes.ok) return;
-      const txJson = await txRes.json() as {
-        result?: {
-          meta?: { innerInstructions?: Array<{ instructions?: Array<{ programId?: string; accounts?: string[] }> }> };
-          transaction?: { message?: { instructions?: Array<{ programId?: string; accounts?: string[] }> } };
-        } | null;
-      };
-      const allIx = [
-        ...(txJson.result?.transaction?.message?.instructions ?? []),
-        ...(txJson.result?.meta?.innerInstructions ?? []).flatMap((g) => g.instructions ?? []),
-      ];
-      const pumpIx = [...allIx].reverse().find(
-        (ix) =>
-          ix.programId === PUMPFUN_PROGRAM &&
-          Array.isArray(ix.accounts) &&
-          ix.accounts.length >= 12 &&
-          ix.accounts[2] === p.mint &&
-          ix.accounts[3] === p.bondingCurveKey,
-      );
-      if (!pumpIx?.accounts) return;
+    try {
+      let sigs = await fetchSigs();
+      if (sigs.length === 0) {
+        await new Promise((r) => setTimeout(r, 400));
+        sigs = await fetchSigs();
+      }
+      if (sigs.length === 0) return;
 
-      const dexAccounts = [...pumpIx.accounts];
+      let pumpIxAccounts: string[] | null = null;
+      for (const sig of sigs.slice(0, 3)) {
+        const ctrl2 = new AbortController();
+        const t2 = setTimeout(() => ctrl2.abort(), 2000);
+        try {
+          const txRes = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            signal: ctrl2.signal,
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'getTransaction',
+              params: [sig, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
+            }),
+          });
+          if (!txRes.ok) continue;
+          const txJson = await txRes.json() as {
+            result?: {
+              meta?: { innerInstructions?: Array<{ instructions?: Array<{ programId?: string; accounts?: string[] }> }> };
+              transaction?: { message?: { instructions?: Array<{ programId?: string; accounts?: string[] }> } };
+            } | null;
+          };
+          const allIx = [
+            ...(txJson.result?.transaction?.message?.instructions ?? []),
+            ...(txJson.result?.meta?.innerInstructions ?? []).flatMap((g) => g.instructions ?? []),
+          ];
+          const pumpIx = [...allIx].reverse().find(
+            (ix) =>
+              ix.programId === PUMPFUN_PROGRAM &&
+              Array.isArray(ix.accounts) &&
+              ix.accounts.length >= 12 &&
+              ix.accounts[2] === p.mint &&
+              ix.accounts[3] === p.bondingCurveKey,
+          );
+          if (pumpIx?.accounts) {
+            pumpIxAccounts = pumpIx.accounts;
+            break;
+          }
+        } finally {
+          clearTimeout(t2);
+        }
+      }
+      if (!pumpIxAccounts) return;
+
+      const dexAccounts = [...pumpIxAccounts];
       const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
       const userVolPda = deriveUserVolumeAccumulator(hotWallet);
       if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
