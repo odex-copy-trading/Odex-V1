@@ -1791,9 +1791,9 @@ export class SolanaLiveFeed {
       }
       if (!this.paper.has(mint)) continue;
       const mult = entry.pos.entryPrice > 0 ? entry.pos.price / entry.pos.entryPrice : 1;
-      // Fhbh1D 45s hard time-stop for flat/dead positions (< +5% and never popped >= +18%)
-      if (entry.hasLiveTick && heldSecs >= 45 && mult < 1.05 && entry.peakPrice < entry.pos.entryPrice * 1.18) {
-        this.closePaperPosition(mint, 'Time-stop (45s)');
+      // Fhbh1D 18s hard time-stop for flat/dead positions (< +5% and never popped >= +18%)
+      if (entry.hasLiveTick && heldSecs >= 18 && mult < 1.05 && entry.peakPrice < entry.pos.entryPrice * 1.18) {
+        this.closePaperPosition(mint, 'Time-stop (18s)');
         continue;
       }
       // 5m time cap for non-runners (< +18%); let 30% moonbag runners ride up to 26m hard max
