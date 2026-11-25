@@ -628,7 +628,8 @@ export class SolanaLiveFeed {
     name?: string;
     uri?: string;
   }) {
-    const rpcUrl = this.usePublicSlotFallback ? PUBLIC_SOLANA_HTTP : this.endpoints.httpUrl;
+    // Always use primary paid Helius HTTP RPC for live account lookup (never fall back to rate-limited public mainnet-beta HTTP).
+    const rpcUrl = this.endpoints.httpUrl;
     const fetchSigs = async () => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 2000);
@@ -710,6 +711,7 @@ export class SolanaLiveFeed {
       const userVolPda = deriveUserVolumeAccumulator(hotWallet);
       if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
 
+      console.log(`[solana-feed] Dispatching live Pump.fun buy: $${p.symbol} (${p.buySizeSol} SOL, ${dexAccounts.length} accs, slot ${p.slot})`);
       this.cp.dispatchLiveTrigger({
         kind: 'launch',
         venue: p.venue,
@@ -820,7 +822,8 @@ export class SolanaLiveFeed {
     slot: number,
     venue: FeedEvent['venue'],
   ) {
-    const rpcUrl = this.usePublicSlotFallback ? PUBLIC_SOLANA_HTTP : this.endpoints.httpUrl;
+    // Always use primary paid Helius HTTP RPC for live account lookup (never fall back to rate-limited public mainnet-beta HTTP).
+    const rpcUrl = this.endpoints.httpUrl;
     const fetchTx = async () => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 3500);
@@ -1009,6 +1012,7 @@ export class SolanaLiveFeed {
     } else if (this.cp.engineStatus === 'RUNNING') {
       const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));
       if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
+      console.log(`[solana-feed] Dispatching live KOL buy: $${symbol} via ${kol.label} (${kol.buySizeSol} SOL, ${(msg.dexAccounts ?? []).length} accs)`);
       this.cp.dispatchLiveTrigger({
         kind: 'kol_buy',
         venue: ev.venue,
@@ -1413,7 +1417,8 @@ export class SolanaLiveFeed {
 
     const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
     if (hotWallet) {
-      const rpcUrl = this.usePublicSlotFallback ? PUBLIC_SOLANA_HTTP : this.endpoints.httpUrl;
+      // Always use primary paid Helius HTTP RPC for live account lookup (never fall back to rate-limited public mainnet-beta HTTP).
+    const rpcUrl = this.endpoints.httpUrl;
       const sumSplMint = async (mint: string): Promise<number | null> => {
         try {
           const r = await fetch(rpcUrl, {
