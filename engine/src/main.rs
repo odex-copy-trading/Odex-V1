@@ -583,6 +583,7 @@ async fn connect_bridge_once(
                                     Ok(mint_pk) => match ctx.exit_engine.get_position(&mint_pk) {
                                         Some(pos) => {
                                             let progs = ctx.executor.programs();
+                                            let sell_router_program = progs.sell_router_program;
                                             let target_dex = match pos.venue {
                                                 Venue::PumpFun => progs.pumpfun_program,
                                                 Venue::PumpSwap => progs.pumpswap_program,
@@ -663,7 +664,7 @@ async fn connect_bridge_once(
                                                         "Executing forced manual sell (min_quote_out=0)"
                                                     );
                                                     let params = SellTxParams {
-                                                        sell_router_program: progs.sell_router_program,
+                                                        sell_router_program,
                                                         target_dex_program: target_dex,
                                                         venue: pos.venue,
                                                         hot_wallet,
