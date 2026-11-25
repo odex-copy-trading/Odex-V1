@@ -96,6 +96,35 @@ impl ExecutorService {
         self.cfg.read().map(|c| c.hot_wallet).unwrap_or([0u8; 32])
     }
 
+    /// Pre-warms HTTP/TCP/TLS connections to all enabled SWQoS landers every 5s
+    /// so Slot-0 bursts incur 0ms handshake latency.
+    pub fn spawn_keepalive(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let client = self.fanout.http_client();
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                ticker.tick().await;
+                let urls: Vec<String> = self
+                    .cfg
+                    .read()
+                    .map(|c| {
+                        c.landers
+                            .iter()
+                            .filter(|l| l.enabled && !l.endpoint_url.trim().is_empty())
+                            .map(|l| l.endpoint_url.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for url in urls {
+                    let c = client.clone();
+                    tokio::spawn(async move {
+                        let _ = c.get(&url).send().await;
+                    });
+                }
+            }
+        })
+    }
+
     /// Executes a Lighthouse-protected percentage sell (`whal-sell-router` + optional `CloseAccount`)
     /// across all enabled SWQoS landers.
     pub async fn execute_sell(&self, params: crate::exits::SellTxParams) -> BurstDispatchSummary {

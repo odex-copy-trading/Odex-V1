@@ -93,7 +93,10 @@ impl LanderFanOut {
     ) -> Self {
         let http = reqwest::Client::builder()
             .tcp_nodelay(true)
+            .tcp_keepalive(std::time::Duration::from_secs(15))
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
             .pool_max_idle_per_host(32)
+            .timeout(std::time::Duration::from_secs(4))
             .build()
             .unwrap_or_default();
         Self {
@@ -132,6 +135,10 @@ impl LanderFanOut {
 
     pub fn programs(&self) -> &super::builder::ProgramIds {
         self.builder.programs()
+    }
+
+    pub fn http_client(&self) -> reqwest::Client {
+        self.http.clone()
     }
 
     /// Generates distinct-signature Lighthouse-protected sell variants across all enabled SWQoS providers.

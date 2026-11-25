@@ -894,6 +894,7 @@ async fn main() {
         Some(exit_engine.clone()),
     ));
     let _nonce_sync_handle = executor.nonce_pool().spawn_rpc_sync(rpc_url.clone(), 4);
+    let _keepalive_handle = executor.clone().spawn_keepalive();
     let _exec_handle = executor.clone().spawn(ingest.bus.subscribe());
 
     // 2s KOL Pre-Slot Balance RPC Refresher (keeps BalanceCache live even on ShredStream-only setups like LocalShred)
