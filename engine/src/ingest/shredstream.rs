@@ -285,9 +285,9 @@ fn parse_solana_tx(slot: u64, received_at_us: u64, buf: &[u8], pos: &mut usize) 
         }
         let mut ix_accounts = Vec::with_capacity(acc_count as usize);
         for &idx in &buf[*pos..*pos + acc_count as usize] {
-            if let Some(pk) = account_keys.get(idx as usize) {
-                ix_accounts.push(*pk);
-            }
+            // Preserve exact instruction account indices even on v0 ALT txs by filling ALT-resolved slots with [0; 32].
+            let pk = account_keys.get(idx as usize).copied().unwrap_or([0u8; 32]);
+            ix_accounts.push(pk);
         }
         *pos += acc_count as usize;
         let (data_len, n) = decode_short_u16(&buf[*pos..]).ok()?;

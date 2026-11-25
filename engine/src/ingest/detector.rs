@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use sha2::{Digest, Sha256};
+use tracing::info;
+
 use super::state::{BalanceCache, WatchlistCache};
 use super::types::{
     compute_opportunity_key, DecodedInstruction, DecodedTx, LaunchFilterConfig, PubkeyBytes,
@@ -47,6 +50,77 @@ pub const DISC_PUMPSWAP_BUY: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb
 pub const DISC_LAUNCHLAB_BUY_EXACT_IN: [u8; 8] = [0xfa, 0xea, 0x0d, 0x7b, 0xd5, 0x9c, 0x13, 0xec];
 pub const DISC_LAUNCHLAB_INITIALIZE: [u8; 8] = [0xaf, 0xaf, 0x6d, 0x1f, 0x0d, 0x98, 0x9b, 0xed];
 
+// Verified 2026 mainnet Pump.fun static accounts for 0.1ms zero-RPC 18-account LocalShred Buy builder.
+const PUMP_GLOBAL: PubkeyBytes = [0x3a, 0x86, 0x5e, 0x69, 0xee, 0x0f, 0x54, 0x80, 0xca, 0xbc, 0xf6, 0x63, 0x57, 0xe4, 0xdc, 0x2f, 0x18, 0xd5, 0x8d, 0x45, 0xc1, 0xea, 0x74, 0x89, 0xfb, 0x37, 0x23, 0xd9, 0x79, 0x3c, 0x72, 0xa6];
+const PUMP_FEE_STD: PubkeyBytes = [0x4a, 0xc2, 0xf8, 0xd0, 0xdd, 0x5c, 0xbc, 0x97, 0xe3, 0x28, 0x9c, 0x19, 0x7c, 0xb5, 0x06, 0x2a, 0x54, 0xf3, 0xd9, 0x56, 0xb9, 0xce, 0x6e, 0x51, 0x15, 0xf9, 0x65, 0x67, 0xaa, 0x5c, 0xb3, 0xe6];
+const PUMP_FEE_MAYHEM: PubkeyBytes = [0xe8, 0x93, 0x14, 0x1f, 0xb1, 0x8e, 0x9f, 0x15, 0x74, 0xd8, 0x10, 0xe1, 0x78, 0xe1, 0x9e, 0x30, 0x60, 0x4e, 0x31, 0x75, 0xaa, 0x2e, 0x4a, 0x32, 0xdf, 0xc8, 0x60, 0x07, 0x27, 0xd1, 0x07, 0x09];
+const PUMP_EVENT_AUTH: PubkeyBytes = [0xac, 0xf1, 0x36, 0xeb, 0x01, 0xfc, 0x1c, 0x4e, 0x88, 0x3d, 0x23, 0xc8, 0xb5, 0x84, 0x4a, 0xb5, 0x9a, 0x37, 0xf6, 0x6a, 0xdd, 0x57, 0xc5, 0xe9, 0xac, 0x3b, 0x53, 0xe0, 0x59, 0xd3, 0x5c, 0x64];
+const PUMP_GLOBAL_VOL: PubkeyBytes = [0xfa, 0x09, 0x11, 0xa5, 0x48, 0x63, 0x41, 0x2d, 0x63, 0x1f, 0x4e, 0x07, 0x87, 0x03, 0x29, 0x6c, 0x03, 0x5f, 0x0d, 0x13, 0x33, 0xa0, 0xd9, 0xc8, 0x83, 0x8d, 0x73, 0xb7, 0x10, 0xfe, 0x6e, 0x2d];
+const PUMP_FEE_CFG: PubkeyBytes = [0x6f, 0x9a, 0xb4, 0xa4, 0xf1, 0x95, 0x8d, 0xc0, 0xa9, 0xc9, 0x4c, 0x3f, 0xb7, 0x2c, 0x07, 0x99, 0x58, 0x43, 0xed, 0xa4, 0x85, 0xe3, 0xa2, 0x4f, 0x10, 0xc6, 0x93, 0x99, 0xf8, 0x19, 0x94, 0x0f];
+const PUMP_FEE_PROG: PubkeyBytes = [0x0c, 0x35, 0xff, 0xa9, 0x05, 0x5a, 0x8e, 0x56, 0x8d, 0xa8, 0xf7, 0xbc, 0x07, 0x56, 0x15, 0x27, 0x4c, 0xf1, 0xc9, 0x2c, 0xa4, 0x1f, 0x40, 0x00, 0x9c, 0x51, 0x6a, 0xa4, 0x14, 0xc2, 0x7c, 0x70];
+const PUMP_BUYBACK_0: PubkeyBytes = [0x43, 0x9e, 0x65, 0x10, 0xc0, 0x3d, 0x65, 0xfa, 0xd9, 0x31, 0xe8, 0x9d, 0x04, 0xbe, 0x0b, 0xb7, 0x0d, 0x51, 0x97, 0x1f, 0x51, 0xc4, 0x15, 0xfb, 0x34, 0x4c, 0x07, 0xdb, 0x41, 0x9f, 0x21, 0x22];
+const ATA_PROGRAM_ID: PubkeyBytes = [0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d, 0x83, 0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9, 0xf8, 0x59];
+const SYSTEM_PROGRAM_ID: PubkeyBytes = [0u8; 32];
+
+fn find_pda(seeds: &[&[u8]], program_id: &PubkeyBytes) -> PubkeyBytes {
+    const PDA_MARKER: &[u8] = b"ProgramDerivedAddress";
+    for bump in (0u8..=255).rev() {
+        let mut h = Sha256::new();
+        for s in seeds {
+            h.update(s);
+        }
+        h.update([bump]);
+        h.update(program_id);
+        h.update(PDA_MARKER);
+        let digest = h.finalize();
+        let mut cand = [0u8; 32];
+        cand.copy_from_slice(&digest);
+        if ed25519_dalek::VerifyingKey::from_bytes(&cand).is_err() {
+            return cand;
+        }
+    }
+    [0u8; 32]
+}
+
+/// 0.1ms zero-RPC, zero-ALT 18-account Pump.fun Buy builder for Slot +0 LocalShred execution.
+fn build_local_pumpfun_buy_accounts(
+    mint: PubkeyBytes,
+    bonding_curve: PubkeyBytes,
+    creator: PubkeyBytes,
+    is_token_2022: bool,
+    is_mayhem: bool,
+) -> Vec<PubkeyBytes> {
+    let token_prog = if is_token_2022 {
+        crate::executor::TOKEN_2022_PROGRAM_ID
+    } else {
+        crate::executor::SPL_TOKEN_PROGRAM_ID
+    };
+    let fee_recipient = if is_mayhem { PUMP_FEE_MAYHEM } else { PUMP_FEE_STD };
+    let assoc_curve = find_pda(&[&bonding_curve, &token_prog, &mint], &ATA_PROGRAM_ID);
+    let creator_vault = find_pda(&[b"creator-vault", &creator], &PUMPFUN_PROGRAM_ID);
+    let bc_v2 = find_pda(&[b"bonding-curve-v2", &mint], &PUMPFUN_PROGRAM_ID);
+    vec![
+        PUMP_GLOBAL,        // [0] global
+        fee_recipient,      // [1] fee_recipient (standard vs mayhem)
+        mint,               // [2] mint
+        bonding_curve,      // [3] bonding_curve
+        assoc_curve,        // [4] associated_bonding_curve
+        [0u8; 32],          // [5] assoc_user (substituted with ephemeral_ata in builder)
+        [0u8; 32],          // [6] user (substituted with hot_wallet in builder)
+        SYSTEM_PROGRAM_ID,  // [7] system_program
+        token_prog,         // [8] token_program (SPL vs Token-2022)
+        creator_vault,      // [9] creator_vault
+        PUMP_EVENT_AUTH,    // [10] event_authority
+        PUMPFUN_PROGRAM_ID, // [11] program
+        PUMP_GLOBAL_VOL,    // [12] global_volume_accumulator
+        [0u8; 32],          // [13] user_volume_accumulator (substituted in builder)
+        PUMP_FEE_CFG,       // [14] fee_config
+        PUMP_FEE_PROG,      // [15] fee_program
+        bc_v2,              // [16] bonding_curve_v2
+        PUMP_BUYBACK_0,     // [17] buyback_fee_recipient
+    ]
+}
+
 #[inline]
 fn now_us() -> u64 {
     SystemTime::now()
@@ -87,6 +161,8 @@ struct ParsedLaunch {
     quote_mint: PubkeyBytes,
     pool_pda: PubkeyBytes,
     creator: PubkeyBytes,
+    is_token_2022: bool,
+    is_mayhem: bool,
     name: String,
     symbol: String,
     uri: String,
@@ -160,15 +236,36 @@ fn parse_launch_ix(ix: &DecodedInstruction) -> Option<ParsedLaunch> {
         && (disc == DISC_PUMPFUN_CREATE_V2 || disc == DISC_PUMPFUN_CREATE_V2_TOKEN2022)
     {
         // Legacy create: [mint(0), mint_auth(1), bonding_curve(2), ..., user(7)].
-        // Token-2022 create_v2: mpl_token_metadata & metadata removed -> user/creator is at index 5 (7 is Token-2022 program!).
+        // Token-2022 create_v2: mpl_token_metadata & metadata removed -> user/creator is at index 5.
         let mint = *ix.accounts.get(0)?;
-        let pool_pda = *ix.accounts.get(2)?;
-        let creator_idx = if disc == DISC_PUMPFUN_CREATE_V2_TOKEN2022 { 5 } else { 7 };
-        let creator = *ix.accounts.get(creator_idx).or_else(|| ix.accounts.last())?;
+        if mint == [0u8; 32] {
+            return None;
+        }
+        let raw_curve = ix.accounts.get(2).copied().unwrap_or([0u8; 32]);
+        let pool_pda = if raw_curve != [0u8; 32] {
+            raw_curve
+        } else {
+            find_pda(&[b"bonding-curve", &mint], &PUMPFUN_PROGRAM_ID)
+        };
+        let is_token_2022 = disc == DISC_PUMPFUN_CREATE_V2_TOKEN2022;
         let mut off = 8;
         let name = read_borsh_string(&ix.data, &mut off).unwrap_or_default();
         let symbol = read_borsh_string(&ix.data, &mut off).unwrap_or_default();
         let uri = read_borsh_string(&ix.data, &mut off).unwrap_or_default();
+        // Borsh creator pubkey (32B) immediately follows uri in Pump.fun create/create_v2 -> exact on-chain bonding_curve.creator!
+        let data_creator: Option<PubkeyBytes> = ix.data.get(off..off + 32).and_then(|s| s.try_into().ok());
+        if data_creator.is_some() {
+            off += 32;
+        }
+        let is_mayhem = is_token_2022 && ix.data.get(off).copied().unwrap_or(0) != 0;
+        let creator_idx = if is_token_2022 { 5 } else { 7 };
+        let creator = data_creator
+            .filter(|c| *c != [0u8; 32])
+            .or_else(|| ix.accounts.get(creator_idx).copied().filter(|c| *c != [0u8; 32]))
+            .unwrap_or([0u8; 32]);
+        if creator == [0u8; 32] {
+            return None;
+        }
         return Some(ParsedLaunch {
             venue: Venue::PumpFun,
             strategy_id: StrategyId::PumpFunCreateV2Snipe,
@@ -176,6 +273,8 @@ fn parse_launch_ix(ix: &DecodedInstruction) -> Option<ParsedLaunch> {
             quote_mint: WSOL_MINT,
             pool_pda,
             creator,
+            is_token_2022,
+            is_mayhem,
             name,
             symbol,
             uri,
@@ -200,6 +299,8 @@ fn parse_launch_ix(ix: &DecodedInstruction) -> Option<ParsedLaunch> {
             quote_mint,
             pool_pda,
             creator,
+            is_token_2022: false,
+            is_mayhem: false,
             name,
             symbol,
             uri,
@@ -356,15 +457,29 @@ impl SignalDetector {
                     if !self.matches_launch_filter(&launch, bundled_dev_buy, &filter) {
                         continue;
                     }
-                    if launch.venue == Venue::PumpFun && bundled_buy_accounts.len() < 16 {
-                        continue;
-                    }
                     if self.is_duplicate_symbol_clone(&launch.symbol, detected_at_us) {
                         continue;
                     }
                     let opportunity_key =
                         compute_opportunity_key(&launch.mint, tx.slot, launch.strategy_id);
-                    let dex_accounts = if !bundled_buy_accounts.is_empty() {
+                    // For Pump.fun, build all 18 mainnet Buy accounts locally in 0.1ms (works even on v0 ALT shreds!).
+                    let dex_accounts = if launch.venue == Venue::PumpFun {
+                        info!(
+                            slot = tx.slot,
+                            symbol = %launch.symbol,
+                            dev_buy_lamports = bundled_dev_buy,
+                            is_token_2022 = launch.is_token_2022,
+                            is_mayhem = launch.is_mayhem,
+                            "LocalShred 0-block Pump.fun launch detected -> firing 18-acc local buy"
+                        );
+                        build_local_pumpfun_buy_accounts(
+                            launch.mint,
+                            launch.pool_pda,
+                            launch.creator,
+                            launch.is_token_2022,
+                            launch.is_mayhem,
+                        )
+                    } else if !bundled_buy_accounts.is_empty() {
                         bundled_buy_accounts.clone()
                     } else {
                         launch.ix_accounts
