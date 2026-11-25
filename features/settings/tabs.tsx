@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Check, Lock, Plus, RefreshCw, Trash2, WifiOff } from '@/components/icons';
+import Link from 'next/link';
+import { Check, Lock, Plus, Power, RefreshCw, Trash2, WifiOff } from '@/components/icons';
 import { Badge, Button, Modal, Toggle, cx } from '@/components/ui';
 import { useCommand, useTerminal } from '@/lib/store';
 import { fmtAgo, fmtSol, shortKey } from '@/lib/format';
@@ -270,6 +271,68 @@ export function TreasuryTab() {
         <NumField path="treasury.max_priority_fee_lamports" label="Max priority fee" unit="lamports" />
       </Section>
       {!on && <p className="text-sm text-muted">Auto-sweep is off. WSOL stays in the vault until you move it.</p>}
+    </div>
+  );
+}
+
+// ---------- 7. security ----------
+export function SecurityTab() {
+  const { state, auth, toast } = useTerminal();
+  const setSecretCount = Object.values(state.config?.secrets ?? {}).filter((s) => s.set).length;
+  return (
+    <div className="grid gap-5">
+      <Section title="Two-step authentication (2FA)" desc="Require a 6-digit authenticator code (Google Authenticator / Authy / 1Password) in addition to your operator token.">
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-line bg-card px-4 py-3.5 sm:col-span-2 lg:col-span-3">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-lg border border-line2 bg-raised text-fg2">
+              <Lock className="size-4" aria-hidden />
+            </span>
+            <div>
+              <div className="flex items-center gap-2 text-sm font-semibold text-fg">
+                Authenticator App (TOTP)
+                <Badge tone="neutral">Not enabled</Badge>
+              </div>
+              <p className="mt-0.5 text-xs text-muted">
+                Protects terminal login, Live Mode activation, and secret changes with a time-based 6-digit code.
+              </p>
+            </div>
+          </div>
+          <Button variant="primary" onClick={() => toast('2FA TOTP enrollment ready to wire on control plane', 'info')}>
+            Set up 2FA
+          </Button>
+        </div>
+      </Section>
+
+      <Section title="Access & encryption" desc="Current control-plane authentication, encrypted secret vault, and audit trail.">
+        <div className="rounded-xl border border-line bg-card px-4 py-3">
+          <div className="text-xs text-muted">Operator authentication</div>
+          <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-fg">
+            scrypt token + JWT <Badge tone="ok">Active</Badge>
+          </div>
+          <p className="mt-1 text-xs text-muted">Rate-limited login with revocable 12h session tokens.</p>
+        </div>
+        <div className="rounded-xl border border-line bg-card px-4 py-3">
+          <div className="text-xs text-muted">Encrypted secrets vault</div>
+          <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-fg">
+            {setSecretCount} secret{setSecretCount === 1 ? '' : 's'} stored <Badge tone="ok">Encrypted</Badge>
+          </div>
+          <p className="mt-1 text-xs text-muted">Write-only at rest (ChaCha20-Poly1305), never returned to the browser.</p>
+        </div>
+        <div className="rounded-xl border border-line bg-card px-4 py-3">
+          <div className="text-xs text-muted">Audit trail</div>
+          <div className="mt-1 text-sm font-semibold text-fg">SQLite action log</div>
+          <p className="mt-1 text-xs text-muted">
+            <Link href="/diagnostics" className="text-accent hover:underline">View recent logins, config edits &amp; sells →</Link>
+          </p>
+        </div>
+      </Section>
+
+      <Section title="Session" desc="Manage your current browser session on this control plane.">
+        <div className="flex flex-wrap items-center justify-between gap-3 sm:col-span-2 lg:col-span-3">
+          <p className="text-xs text-muted">Signing out revokes your active JWT immediately on the server.</p>
+          <Button variant="danger" icon={Power} onClick={() => void auth.logout()}>Sign out session</Button>
+        </div>
+      </Section>
     </div>
   );
 }

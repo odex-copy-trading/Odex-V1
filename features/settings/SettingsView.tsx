@@ -10,19 +10,22 @@ import {
 } from '@/lib/config/schema';
 import type { ConfigApplyResult } from '@/lib/types';
 import { FormProvider, setAt } from './form';
-import { ExitsTab, LandersTab, NetworkTab, StrategyTab, TreasuryTab, WalletsTab } from './tabs';
+import { ExitsTab, LandersTab, NetworkTab, SecurityTab, StrategyTab, TreasuryTab, WalletsTab } from './tabs';
 
-const TABS: { key: SectionKey; label: string; render: () => ReactNode }[] = [
+type SettingsTabKey = SectionKey | 'security';
+
+const TABS: { key: SettingsTabKey; label: string; render: () => ReactNode }[] = [
   { key: 'network', label: 'Network & Ingestion', render: () => <NetworkTab /> },
   { key: 'wallets', label: 'Wallets & Nonce Pool', render: () => <WalletsTab /> },
   { key: 'strategy', label: 'Strategy & Buy Guards', render: () => <StrategyTab /> },
   { key: 'landers', label: 'Multi-Lander & Fees', render: () => <LandersTab /> },
   { key: 'exits', label: 'Exit Ladder & Risk', render: () => <ExitsTab /> },
   { key: 'treasury', label: 'Treasury Auto-Sweep', render: () => <TreasuryTab /> },
+  { key: 'security', label: 'Security', render: () => <SecurityTab /> },
 ];
-const LABEL = Object.fromEntries(TABS.map((t) => [t.key, t.label])) as Record<SectionKey, string>;
+const LABEL = Object.fromEntries(TABS.map((t) => [t.key, t.label])) as Record<SettingsTabKey, string>;
 
-const TabPanel = memo(function TabPanel({ tab }: { tab: SectionKey }) {
+const TabPanel = memo(function TabPanel({ tab }: { tab: SettingsTabKey }) {
   return <div role="tabpanel" aria-label={LABEL[tab]}>{TABS.find((t) => t.key === tab)!.render()}</div>;
 });
 
@@ -57,12 +60,12 @@ function DiffList({ changes }: { changes: ConfigChange[] }) {
   );
 }
 
-const TAB_KEYS = new Set<SectionKey>(TABS.map((t) => t.key));
+const TAB_KEYS = new Set<SettingsTabKey>(TABS.map((t) => t.key));
 
 export function SettingsView() {
   const { state, send, toast } = useTerminal();
   const cs = state.config;
-  const [tab, setTab] = useState<SectionKey>('network');
+  const [tab, setTab] = useState<SettingsTabKey>('network');
   const [draft, setDraft] = useState<BotConfig | null>(null);
   const [base, setBase] = useState<number | null>(null);
   const [review, setReview] = useState(false);
@@ -72,10 +75,10 @@ export function SettingsView() {
   const [conflict, setConflict] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Deep-link support: /settings#network|wallets|strategy|landers|exits|treasury
+  // Deep-link support: /settings#network|wallets|strategy|landers|exits|treasury|security
   useEffect(() => {
     const readHash = () => {
-      const frag = decodeURIComponent(window.location.hash.replace(/^#/, '')) as SectionKey;
+      const frag = decodeURIComponent(window.location.hash.replace(/^#/, '')) as SettingsTabKey;
       if (TAB_KEYS.has(frag)) setTab(frag);
     };
     readHash();
@@ -83,7 +86,7 @@ export function SettingsView() {
     return () => window.removeEventListener('hashchange', readHash);
   }, []);
 
-  const selectTab = useCallback((next: SectionKey) => {
+  const selectTab = useCallback((next: SettingsTabKey) => {
     setTab(next);
     if (typeof window !== 'undefined') {
       window.history.replaceState(null, '', `#${next}`);
@@ -104,7 +107,7 @@ export function SettingsView() {
     const v = validateConfig(draft);
     return { ...(v.ok ? {} : v.errors), ...serverErrors };
   }, [draft, serverErrors]);
-  const errCount = (k: SectionKey) => Object.keys(errors).filter((p) => p === k || p.startsWith(k + '.')).length;
+  const errCount = (k: SettingsTabKey) => Object.keys(errors).filter((p) => p === k || p.startsWith(k + '.')).length;
   const totalErrors = Object.keys(errors).length;
   const stale = cs && base != null && cs.version !== base && changes.length > 0;
 
