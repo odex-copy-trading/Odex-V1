@@ -82,6 +82,8 @@ export interface ClosedPosition {
   proceedsSol: number;
   solUsd: number; // SOL/USD at close, for USD display
   exitReason: string;
+  buySlot?: number | null;
+  slotDelta?: number | null;
 }
 
 export interface KolStats {

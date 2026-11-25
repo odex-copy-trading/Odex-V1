@@ -281,6 +281,7 @@ export class ControlPlane extends EventEmitter {
               };
               r.closed = [cl, ...r.closed].slice(0, 5000);
               this.db.insertClosed(cl);
+              void this.resolveClosedLandingSlot(cl.id, cl.mint);
               this.cloud?.syncClosed(cl);
               this.recordPaperKolOutcome(cl);
               closedRec = cl;
@@ -334,6 +335,83 @@ export class ControlPlane extends EventEmitter {
 
   private publish(e: TelemetryEvent) { this.emit('telemetry', e); }
   private publishConfig() { this.publish({ type: 'config_updated', ts: Date.now(), config: this.configState() }); }
+
+  /** Background non-blocking resolver: records exact real on-chain buySlot + slotDelta on closed live trades. */
+  private async resolveClosedLandingSlot(closedId: string, mint: string) {
+    const wallet = this.cfg.config.wallets.hot_wallet_pubkey;
+    const rpcUrl = this.cfg.config.network.rpc_primary_url || 'https://api.mainnet-beta.solana.com';
+    if (!wallet || !mint) return;
+    const rpc = async <T>(method: string, params: unknown[]): Promise<T | null> => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8_000);
+      try {
+        const res = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: ctrl.signal,
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+        });
+        if (!res.ok) return null;
+        const j = (await res.json()) as { result?: T };
+        return j.result ?? null;
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(t);
+      }
+    };
+    try {
+      // 1. Find earliest confirmed BUY tx for `mint` in our wallet's recent 20 signatures
+      const wsigs = await rpc<Array<{ signature: string; slot: number; err: unknown }>>('getSignaturesForAddress', [wallet, { limit: 20 }]);
+      if (!wsigs?.length) return;
+      let buySlot: number | null = null;
+      for (const s of wsigs) {
+        if (s.err !== null) continue;
+        const tx = await rpc<{
+          slot?: number;
+          meta?: {
+            err?: unknown;
+            preTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
+            postTokenBalances?: Array<{ owner?: string; mint?: string; uiTokenAmount?: { uiAmount?: number | null } }>;
+          };
+        }>('getTransaction', [s.signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]);
+        if (!tx?.meta || tx.meta.err !== null) continue;
+        const pre = (tx.meta.preTokenBalances ?? []).find((b) => b.owner === wallet && b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
+        const post = (tx.meta.postTokenBalances ?? []).find((b) => b.owner === wallet && b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
+        if (post > pre && typeof tx.slot === 'number') {
+          buySlot = buySlot === null ? tx.slot : Math.min(buySlot, tx.slot);
+        }
+      }
+      if (buySlot === null) return;
+
+      // 2. Find exact on-chain launch slot for `mint` (walk up to 3 pages of 500 sigs; null delta if >1500 txs so never fake)
+      let before: string | undefined;
+      let launchSlot: number | null = null;
+      let exactLaunch = false;
+      for (let page = 0; page < 3; page++) {
+        const params: Record<string, unknown> = { limit: 500 };
+        if (before) params.before = before;
+        const msigs = await rpc<Array<{ signature: string; slot: number }>>('getSignaturesForAddress', [mint, params]);
+        if (!msigs?.length) break;
+        launchSlot = msigs[msigs.length - 1].slot;
+        if (msigs.length < 500) {
+          exactLaunch = true;
+          break;
+        }
+        before = msigs[msigs.length - 1].signature;
+      }
+      const slotDelta = exactLaunch && launchSlot !== null && buySlot >= launchSlot ? buySlot - launchSlot : null;
+      this.db.updateClosedSlot(closedId, buySlot, slotDelta);
+      if (this.rt) {
+        const idx = this.rt.closed.findIndex((c) => c.id === closedId);
+        if (idx >= 0) {
+          const updated = { ...this.rt.closed[idx], buySlot, slotDelta };
+          this.rt.closed[idx] = updated;
+          this.publish({ type: 'position_updated', ts: Date.now(), positions: this.rt.positions, closed: updated });
+        }
+      }
+    } catch { /* non-fatal background telemetry */ }
+  }
 
   // ---------- reads ----------
   private needRt(): EngineRuntime {

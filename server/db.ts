@@ -55,6 +55,9 @@ export class Db {
     // One-time idempotent fixes for pre-0aacb42 CATBAL row and 1s duplicate FUMCHI glitch row.
     this.raw.exec("UPDATE closed_positions SET proceeds_sol = 0.3374 WHERE id = 'cl_live_GZvvGyyjJo_mwvks6r8' AND proceeds_sol < 0.15;");
     this.raw.exec("DELETE FROM closed_positions WHERE symbol = 'FUMCHI' AND (closed_at - opened_at) < 3000;");
+    for (const col of ['buy_slot INTEGER', 'slot_delta INTEGER']) {
+      try { this.raw.exec(`ALTER TABLE closed_positions ADD COLUMN ${col};`); } catch { /* already exists */ }
+    }
   }
   close() { this.raw.close(); }
   tx<T>(fn: () => T): T {
@@ -137,13 +140,21 @@ export class Db {
 
   // ---------- positions / sweeps ----------
   insertClosed(c: ClosedPosition) {
-    this.raw.prepare(`INSERT OR IGNORE INTO closed_positions (id, mint, symbol, venue, kol_id, opened_at, closed_at, entry_sol, proceeds_sol, sol_usd, exit_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.id, c.mint, c.symbol, c.venue, c.kolId, c.openedAt, c.closedAt, c.entrySol, c.proceedsSol, c.solUsd, c.exitReason);
+    this.raw.prepare(`INSERT OR IGNORE INTO closed_positions (id, mint, symbol, venue, kol_id, opened_at, closed_at, entry_sol, proceeds_sol, sol_usd, exit_reason, buy_slot, slot_delta)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      c.id, c.mint, c.symbol, c.venue, c.kolId, c.openedAt, c.closedAt, c.entrySol, c.proceedsSol, c.solUsd, c.exitReason,
+      c.buySlot ?? null, c.slotDelta ?? null,
+    );
+  }
+  updateClosedSlot(id: string, buySlot: number, slotDelta: number | null) {
+    this.raw.prepare('UPDATE closed_positions SET buy_slot = ?, slot_delta = ? WHERE id = ?').run(buySlot, slotDelta, id);
   }
   listClosed(limit: number): ClosedPosition[] {
     return (this.raw.prepare('SELECT * FROM closed_positions ORDER BY closed_at DESC LIMIT ?').all(limit) as Row[]).map((r) => ({
       id: String(r.id), mint: String(r.mint), symbol: String(r.symbol), venue: r.venue as ClosedPosition['venue'], kolId: (r.kol_id as string) ?? null,
       openedAt: Number(r.opened_at), closedAt: Number(r.closed_at), entrySol: Number(r.entry_sol), proceedsSol: Number(r.proceeds_sol), solUsd: Number(r.sol_usd), exitReason: String(r.exit_reason),
+      buySlot: r.buy_slot != null ? Number(r.buy_slot) : null,
+      slotDelta: r.slot_delta != null ? Number(r.slot_delta) : null,
     }));
   }
   upsertSweep(s: Sweep) {

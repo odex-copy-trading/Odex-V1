@@ -83,10 +83,11 @@ export function ClosedTab({ rows, unit }: { rows: ClosedPosition[]; unit: 'USD' 
   };
   return (
     <table className="w-full">
-      <thead><tr><RTh>Token</RTh><RTh right className="hidden md:table-cell">Bought</RTh><RTh right className="hidden md:table-cell">Sold</RTh><RTh right>P&amp;L</RTh><RTh className="hidden sm:table-cell">Exit</RTh><RTh right className="hidden lg:table-cell">Opened</RTh><RTh className="hidden xl:table-cell"><span className="sr-only">Actions</span></RTh></tr></thead>
+      <thead><tr><RTh>Token</RTh><RTh right className="hidden md:table-cell">Bought</RTh><RTh right className="hidden md:table-cell">Sold</RTh><RTh right>P&amp;L</RTh><RTh className="hidden sm:table-cell">Exit</RTh><RTh right className="hidden md:table-cell">Slot</RTh><RTh right className="hidden lg:table-cell">Opened</RTh><RTh className="hidden xl:table-cell"><span className="sr-only">Actions</span></RTh></tr></thead>
       <tbody>
         {rows.map((c) => {
           const pnl = c.proceedsSol - c.entrySol, pct = c.entrySol > 0 ? (pnl / c.entrySol) * 100 : 0, held = Math.max(0, (c.closedAt - c.openedAt) / 1000);
+          const deltaTone = c.slotDelta == null ? 'text-fg3' : c.slotDelta <= 1 ? 'text-ok' : c.slotDelta <= 3 ? 'text-warn' : 'text-bad';
           return (
             <tr key={c.id} className="hover:bg-card">
               <RTd><TokenCell symbol={c.symbol} badge={VENUE_SHORT[c.venue]} mint={c.mint} ts={c.openedAt} image={c.image} sub={<>held {held < 60 ? `${Math.round(held)}s` : `${Math.round(held / 60)}m`} · {at(state, c.kolId)}</>} /></RTd>
@@ -97,6 +98,18 @@ export function ClosedTab({ rows, unit }: { rows: ClosedPosition[]; unit: 'USD' 
                   bottom={unit === 'USD' ? `${fmtSol(pnl, 4, true)} SOL` : usd(pnl, c.solUsd, true)} />
               </RTd>
               <RTd className="hidden sm:table-cell"><StatusChip tone={EXIT_TONE[c.exitReason] ?? 'neutral'}>{c.exitReason}</StatusChip></RTd>
+              <RTd right className="hidden md:table-cell">
+                {c.slotDelta != null ? (
+                  <NumCell
+                    top={<span className={cx('font-semibold tabular-nums', deltaTone)}>+{c.slotDelta} slot{c.slotDelta === 1 ? '' : 's'}</span>}
+                    bottom={c.buySlot ? `#${c.buySlot.toLocaleString()}` : undefined}
+                  />
+                ) : c.buySlot ? (
+                  <NumCell top={<span className="tabular-nums text-fg2">#{c.buySlot.toLocaleString()}</span>} />
+                ) : (
+                  <span className="text-fg3">—</span>
+                )}
+              </RTd>
               <RTd right className="hidden lg:table-cell"><NumCell top={`${fmtAgo(c.openedAt)} ago`} bottom={`closed ${fmtAgo(c.closedAt)} ago`} /></RTd>
               <RTd className="hidden xl:table-cell">
                 <div className="flex justify-end gap-2">
