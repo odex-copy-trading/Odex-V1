@@ -167,6 +167,9 @@ export class SolanaLiveFeed {
   private rpcKolReqToPubkey = new Map<number, string>();
   private rpcKolPubkeyToSubId = new Map<string, number>();
   private rpcKolSubIdToPubkey = new Map<number, string>();
+  private rpcPumpCreateReqId: number | null = null;
+  private rpcPumpCreateSubId: number | null = null;
+  private seenPumpCreateSigs = new Set<string>();
   private nextRpcSubReqId = 100;
   private seenKolSigs = new Set<string>();
   private creatorLaunches = new Map<string, number[]>();
@@ -266,8 +269,20 @@ export class SolanaLiveFeed {
       this.rpcKolReqToPubkey.clear();
       this.rpcKolPubkeyToSubId.clear();
       this.rpcKolSubIdToPubkey.clear();
+      this.rpcPumpCreateReqId = null;
+      this.rpcPumpCreateSubId = null;
       console.log(`[solana-feed] Slot stream connected (${this.usePublicSlotFallback ? 'public mainnet-beta' : 'configured RPC'})`);
       ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'slotSubscribe', params: [] }));
+      if (!this.usePublicSlotFallback) {
+        const reqId = this.nextRpcSubReqId++;
+        this.rpcPumpCreateReqId = reqId;
+        ws.send(JSON.stringify({
+          jsonrpc: '2.0',
+          id: reqId,
+          method: 'logsSubscribe',
+          params: [{ mentions: [PUMPFUN_PROGRAM] }, { commitment: 'processed' }],
+        }));
+      }
       this.syncKolSubscriptions();
     });
 
@@ -275,6 +290,12 @@ export class SolanaLiveFeed {
       this.lastSlotMsgAt = Date.now();
       let msg: Record<string, unknown>;
       try { msg = JSON.parse(raw.toString()) as Record<string, unknown>; } catch { return; }
+      if (typeof msg.id === 'number' && typeof msg.result === 'number' && msg.id === this.rpcPumpCreateReqId) {
+        this.rpcPumpCreateReqId = null;
+        this.rpcPumpCreateSubId = msg.result;
+        console.log('[solana-feed] Paid Helius real-time Pump.fun Create/CreateV2 stream subscribed');
+        return;
+      }
       if (typeof msg.id === 'number' && typeof msg.result === 'number' && this.rpcKolReqToPubkey.has(msg.id)) {
         const pubkey = this.rpcKolReqToPubkey.get(msg.id)!;
         this.rpcKolReqToPubkey.delete(msg.id);
@@ -296,9 +317,22 @@ export class SolanaLiveFeed {
         const val = params?.result?.value;
         const slot = params?.result?.context?.slot ?? this.lastSlot;
         if (typeof subId !== 'number' || !val?.signature || val.err !== null) return;
+        const logs = Array.isArray(val.logs) ? val.logs : [];
+        if (subId === this.rpcPumpCreateSubId) {
+          if (logs.some((l) => l.includes('Instruction: Create') || l.includes('Instruction: CreateV2'))) {
+            if (!this.seenPumpCreateSigs.has(val.signature)) {
+              this.seenPumpCreateSigs.add(val.signature);
+              if (this.seenPumpCreateSigs.size > 500) {
+                const first = this.seenPumpCreateSigs.values().next().value;
+                if (first) this.seenPumpCreateSigs.delete(first);
+              }
+              void this.inspectHeliusPumpCreate(val.signature, slot);
+            }
+          }
+          return;
+        }
         const kolPubkey = this.rpcKolSubIdToPubkey.get(subId);
         if (!kolPubkey) return;
-        const logs = Array.isArray(val.logs) ? val.logs : [];
         const venue = detectVenueFromLogs(logs);
         if (!venue) return;
         if (this.seenKolSigs.has(val.signature)) return;
@@ -562,6 +596,82 @@ export class SolanaLiveFeed {
     finally { this.inFlightFallback = false; }
   }
 
+  /** Real-time paid Helius WS Pump.fun Create/CreateV2 launch resolver (zero PumpPortal dependency). */
+  private async inspectHeliusPumpCreate(signature: string, slot: number) {
+    if (this.stopped) return;
+    const rpcUrl = this.endpoints.httpUrl;
+    const waitsMs = [0, 200, 350, 500, 700];
+    try {
+      for (const wait of waitsMs) {
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 1600);
+        try {
+          const res = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            signal: ctrl.signal,
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'getTransaction',
+              params: [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'confirmed' }],
+            }),
+          });
+          if (!res.ok) continue;
+          const j = await res.json() as {
+            result?: {
+              meta?: {
+                err?: unknown;
+                preBalances?: number[];
+                postBalances?: number[];
+                innerInstructions?: Array<{ instructions?: Array<{ programId?: string; accounts?: string[] }> }>;
+              };
+              transaction?: { message?: { instructions?: Array<{ programId?: string; accounts?: string[] }> } };
+            } | null;
+          };
+          const tx = j.result;
+          if (!tx || tx.meta?.err) return;
+          const allIx = [
+            ...(tx.transaction?.message?.instructions ?? []),
+            ...(tx.meta?.innerInstructions ?? []).flatMap((g) => g.instructions ?? []),
+          ];
+          const pumpIx = [...allIx].reverse().find(
+            (ix) =>
+              ix.programId === PUMPFUN_PROGRAM &&
+              Array.isArray(ix.accounts) &&
+              ix.accounts.length >= 16 &&
+              ix.accounts[15] === PUMP_FEE_PROGRAM,
+          );
+          if (!pumpIx?.accounts) return;
+          const mint = pumpIx.accounts[2];
+          const bondingCurveKey = pumpIx.accounts[3];
+          const creator = pumpIx.accounts[6];
+          if (!mint || !bondingCurveKey || this.seenMints.has(mint)) return;
+          const pre = tx.meta?.preBalances?.[0] ?? 0;
+          const post = tx.meta?.postBalances?.[0] ?? 0;
+          const devBuySol = Math.max(0, +(((pre - post) / 1e9) - 0.025).toFixed(4));
+          this.handleNewLaunch({
+            mint,
+            signature,
+            symbol: mint.slice(0, 5),
+            name: 'Helius live',
+            uri: 'helius',
+            solAmount: devBuySol,
+            bondingCurveKey,
+            creator,
+            pool: 'pump',
+            prefetchedDexAccounts: pumpIx.accounts,
+            slotOverride: slot,
+          });
+          return;
+        } finally {
+          clearTimeout(t);
+        }
+      }
+    } catch { /* ignore transient RPC timeout */ }
+  }
+
   private handleNewLaunch(
     msg: {
       mint: string;
@@ -578,6 +688,8 @@ export class SolanaLiveFeed {
       pool?: string;
       fromFallback?: boolean;
       createdAtMs?: number;
+      prefetchedDexAccounts?: string[];
+      slotOverride?: number;
     },
     ws?: WebSocket,
   ) {
@@ -667,7 +779,7 @@ export class SolanaLiveFeed {
           bondingCurveKey: msg.bondingCurveKey,
           signature: msg.signature,
           normSym,
-          slot,
+          slot: msg.slotOverride ?? slot,
           buySizeSol: cfg.strategy.default_buy_sol || 0.1,
           maxCurveReserveSol: cfg.strategy.max_curve_reserve_sol,
           creator: msg.creator,
@@ -675,6 +787,7 @@ export class SolanaLiveFeed {
           symbol,
           name: msg.name,
           uri: msg.uri,
+          prefetchedDexAccounts: msg.prefetchedDexAccounts,
         });
       }
     }
@@ -698,6 +811,7 @@ export class SolanaLiveFeed {
     uri?: string;
     kolId?: string;
     kolWallet?: string;
+    prefetchedDexAccounts?: string[];
   }) {
     // Always use primary paid Helius HTTP RPC for live account lookup (never fall back to rate-limited public mainnet-beta HTTP).
     const rpcUrl = this.endpoints.httpUrl;
@@ -840,9 +954,19 @@ export class SolanaLiveFeed {
     };
 
     try {
-      // 1. Try instant ~100ms local PDA derivation first (standard Pump.fun coins -> zero confirmed wait!)
-      let dexAccounts = await tryFastLocalAccounts();
-      let fastLocal = dexAccounts !== null;
+      // 0. If paid Helius WS already extracted exact Pump.fun Buy accounts, dispatch in <1ms!
+      let dexAccounts: string[] | null = null;
+      let fastLocal = false;
+      if (p.prefetchedDexAccounts && p.prefetchedDexAccounts.length >= 16) {
+        dexAccounts = [...p.prefetchedDexAccounts];
+        if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
+        if (bcV2Pda && dexAccounts.length >= 17) dexAccounts[16] = bcV2Pda;
+        fastLocal = true;
+      } else {
+        // 1. Try instant ~100ms local PDA derivation first (standard Pump.fun coins -> zero confirmed wait!)
+        dexAccounts = await tryFastLocalAccounts();
+        fastLocal = dexAccounts !== null;
+      }
 
       // 2. Fallback for Buyback/Cashback/Mayhem coins (or not yet at processed): poll getTransaction up to 2.7s
       if (!dexAccounts) {
@@ -1189,6 +1313,8 @@ export class SolanaLiveFeed {
     if (this.cp.engineStatus === 'SHADOW' && this.paper.size < 5 && !this.paper.has(msg.mint)) {
       this.openPaperPosition(ev, kol.buySizeSol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, msg.entryPriceSol);
     } else if (this.cp.engineStatus === 'RUNNING') {
+      // Direct-native Rust executor executes Pump.fun bonding-curve buys; skip non-Pump.fun venues to prevent Custom(3007) reverts.
+      if (ev.venue !== 'Pump.fun') return;
       const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));
       if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
       const maxAffordable = this.solBalance > 0.11 ? +(this.solBalance - 0.06).toFixed(4) : kol.buySizeSol;
