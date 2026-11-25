@@ -1158,14 +1158,16 @@ export class SolanaLiveFeed {
     } else if (this.cp.engineStatus === 'RUNNING') {
       const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));
       if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
-      console.log(`[solana-feed] Dispatching live KOL buy: $${symbol} via ${kol.label} (${kol.buySizeSol} SOL, ${(msg.dexAccounts ?? []).length} accs)`);
+      const maxAffordable = this.solBalance > 0.11 ? +(this.solBalance - 0.06).toFixed(4) : kol.buySizeSol;
+      const liveBuySol = Math.max(0.05, Math.min(kol.buySizeSol, maxAffordable));
+      console.log(`[solana-feed] Dispatching live KOL buy: $${symbol} via ${kol.label} (${liveBuySol} SOL [cfg ${kol.buySizeSol}], ${(msg.dexAccounts ?? []).length} accs)`);
       this.cp.dispatchLiveTrigger({
         kind: 'kol_buy',
         venue: ev.venue,
         mint: msg.mint,
         poolPda: msg.bondingCurveKey || msg.mint,
         slot,
-        buySizeSol: kol.buySizeSol,
+        buySizeSol: liveBuySol,
         maxCurveReserveSol: kol.maxCurveReserveSol,
         kolId: kol.id,
         kolWallet: kol.pubkey,

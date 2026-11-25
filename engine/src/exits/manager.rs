@@ -36,8 +36,8 @@ impl Default for ExitPolicy {
             same_slot_take_profit_enabled: true,
             same_slot_take_profit_pct: 25,
             instant_tp_pct: 25,
-            stop_loss_pct: 30.0,
-            trailing_stop_pct: 18.0,
+            stop_loss_pct: 16.0,
+            trailing_stop_pct: 0.0,
             curve_floor_enabled: true,
             min_liquidity_floor_lamports: 10_000_000_000, // 10 SOL
             max_hold_secs: 1560,

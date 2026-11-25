@@ -304,8 +304,12 @@ fn apply_bridge_exits(cmd: &Value, exits: &ExitEngine) {
     if let Some(v) = ex.get("stop_loss_pct").and_then(|v| v.as_f64()) {
         policy.stop_loss_pct = v.clamp(0.0, 99.0);
     }
-    if let Some(v) = ex.get("trailing_stop_pct").and_then(|v| v.as_f64()) {
-        policy.trailing_stop_pct = v.clamp(0.0, 95.0);
+    if let Some(ts) = ex.get("trailing_stop_pct") {
+        if ts.is_null() {
+            policy.trailing_stop_pct = 0.0;
+        } else if let Some(v) = ts.as_f64() {
+            policy.trailing_stop_pct = v.clamp(0.0, 95.0);
+        }
     }
     if let Some(cf) = ex.get("curve_floor") {
         if let Some(en) = cf.get("enabled").and_then(|v| v.as_bool()) {
