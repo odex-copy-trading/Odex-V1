@@ -234,39 +234,8 @@ impl ExecutorService {
                     },
                     high_conviction,
                 );
-                // Emit live open positions to Step 3 control plane so Overview Positions tab updates immediately.
-                let live_positions: Vec<telemetry::LivePositionPayload> = exits
-                    .list_positions()
-                    .into_iter()
-                    .map(|p| {
-                        let m = pubkey_to_bs58(&p.mint);
-                        let sym = if p.mint == trigger.mint && !trigger_symbol.is_empty() {
-                            trigger_symbol.clone()
-                        } else {
-                            m[..m.len().min(5)].to_string()
-                        };
-                        telemetry::LivePositionPayload {
-                            id: format!("live_{}", &m[..m.len().min(12)]),
-                            symbol: sym,
-                            mint: m,
-                            venue: p.venue,
-                            kol_id: kol_id.clone(),
-                            opened_at: p.opened_at_secs * 1_000,
-                            opened_slot: p.opened_slot,
-                            entry_sol: p.entry_price_sol,
-                            initial_tokens: 1.0,
-                            tokens: 1.0,
-                            entry_price: p.entry_price_sol,
-                            price: p.entry_price_sol,
-                            realized_sol: 0.0,
-                            pending_sell: None,
-                        }
-                    })
-                    .collect();
-                let _ = self.telemetry_tx.try_send(ExecutorTelemetryEvent::PositionUpdated {
-                    ts,
-                    positions: live_positions,
-                });
+                // Note: live UI `position_updated` is emitted by the 1s on-chain ExitEngine monitor
+                // ONLY once `raw_tok_bal > 0` is confirmed on-chain (prevents ghost positions when a Jito TX reverts).
 
                 // Fhbh1D same-slot 25% opening TP1 via Program #4 percentage sell router (skipped in direct native mode until token balance is read)
                 let direct_native = std::env::var("WHAL_DIRECT_NATIVE_DEX")

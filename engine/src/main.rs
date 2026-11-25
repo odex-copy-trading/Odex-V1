@@ -860,10 +860,17 @@ async fn main() {
                         .and_then(|v| v.as_str());
                     let raw_tok_bal: u64 = match tok_b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()) {
                         Some(buf) if buf.len() >= 72 => u64::from_le_bytes(buf[64..72].try_into().unwrap_or([0; 8])),
-                        _ => pos.token_balance,
+                        _ => 0,
                     };
-                    let ui_tokens = if raw_tok_bal > 0 { raw_tok_bal as f64 / 1e6 } else { 1.0 };
-                    let ui_price = if raw_tok_bal > 0 && price_sol > 0.0 { price_sol } else { pos.entry_price_sol };
+                    // Auto-prune unconfirmed/reverted buys: if 0 tokens on-chain after 6s, remove ghost position.
+                    if raw_tok_bal == 0 {
+                        if now_secs.saturating_sub(pos.opened_at_secs) >= 6 {
+                            exit_mgr.remove_position(&pos.mint);
+                        }
+                        continue;
+                    }
+                    let ui_tokens = raw_tok_bal as f64 / 1e6;
+                    let ui_price = if price_sol > 0.0 { price_sol } else { pos.entry_price_sol / ui_tokens };
                     let mut closed_now = false;
                     if raw_tok_bal > 0 && price_sol > 0.0 {
                         if let Some(order) = exit_mgr.on_price_update(&pos.mint, price_sol * ui_tokens, v_sol_lamports, now_secs) {
