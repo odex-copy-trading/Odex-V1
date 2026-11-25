@@ -1006,6 +1006,8 @@ export class SolanaLiveFeed {
 
     try {
       // 0. If paid Helius WS already extracted exact Pump.fun Buy accounts, dispatch in <1ms!
+      // Otherwise use unthrottled Helius getTransaction + fetchSigs fallback so all 18 accounts
+      // (including per-coin [17] buyback_fee_recipient) are always present (0% AnchorError 6062/6074).
       let dexAccounts: string[] | null = null;
       let fastLocal = false;
       if (p.prefetchedDexAccounts && p.prefetchedDexAccounts.length >= 16) {
@@ -1013,10 +1015,6 @@ export class SolanaLiveFeed {
         if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
         if (bcV2Pda && dexAccounts.length >= 17) dexAccounts[16] = bcV2Pda;
         fastLocal = true;
-      } else {
-        // 1. Try instant ~100ms local PDA derivation first (standard Pump.fun coins -> zero confirmed wait!)
-        dexAccounts = await tryFastLocalAccounts();
-        fastLocal = dexAccounts !== null;
       }
 
       // 2. Fallback for Buyback/Cashback/Mayhem coins (or not yet at processed): poll getTransaction up to 2.7s
