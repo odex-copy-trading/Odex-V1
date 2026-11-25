@@ -714,9 +714,9 @@ export class SolanaLiveFeed {
       }
       if (!pumpIxAccounts) return;
 
-      // Keep exact 17-account Pump.fun Buy layout ([0..16] + [16]=bonding_curve_v2 as last remaining account).
-      // Stripping extra 18th bundler/cashback accounts prevents Pump.fun AnchorError 6074 (InvalidBondingCurveV2).
-      const dexAccounts = pumpIxAccounts.slice(0, 17);
+      // Preserve all remaining accounts from the matched Pump.fun Buy instruction
+      // (17 accounts for standard coins, 18 accounts including buyback_fee_recipient for Buyback coins).
+      const dexAccounts = [...pumpIxAccounts];
       const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
       const userVolPda = deriveUserVolumeAccumulator(hotWallet);
       if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
@@ -942,11 +942,8 @@ export class SolanaLiveFeed {
       const dexIx = [...allKolIx].reverse().find(
         (ix) => ix.programId && Array.isArray(ix.accounts) && ix.accounts.length >= 10 && DEX_PROGRAM_VENUES.some(([pid]) => pid === ix.programId),
       );
-      let dexAccounts = dexIx?.accounts ? [...dexIx.accounts] : [];
+      const dexAccounts = dexIx?.accounts ? [...dexIx.accounts] : [];
       if (dexIx?.programId === PUMPFUN_PROGRAM && dexAccounts.length > 13) {
-        if (dexAccounts.length > 17 && dexAccounts[15] === 'pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ') {
-          dexAccounts = dexAccounts.slice(0, 17);
-        }
         const userVolPda = deriveUserVolumeAccumulator(this.cp.configState().config.wallets.hot_wallet_pubkey);
         if (userVolPda) dexAccounts[13] = userVolPda;
       }
