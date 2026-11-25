@@ -924,10 +924,14 @@ async fn main() {
                 .build()
                 .unwrap_or_default();
             let mut ticker = tokio::time::interval(Duration::from_millis(400));
+            let mut zero_ticks: std::collections::HashMap<PubkeyBytes, u8> = std::collections::HashMap::new();
+            let mut last_ui: std::collections::HashMap<PubkeyBytes, Value> = std::collections::HashMap::new();
             loop {
                 ticker.tick().await;
                 let open = exit_mgr.list_positions();
                 if open.is_empty() {
+                    zero_ticks.clear();
+                    last_ui.clear();
                     continue;
                 }
                 let now_secs = SystemTime::now()
@@ -954,6 +958,9 @@ async fn main() {
                         .unwrap_or_default(),
                     Err(_) => continue,
                 };
+                if vals.len() != keys.len() {
+                    continue;
+                }
                 let mut live_ui_positions: Vec<Value> = Vec::with_capacity(open.len());
                 for (i, pos) in open.iter().enumerate() {
                     let b64 = vals
@@ -977,13 +984,27 @@ async fn main() {
                         Some(buf) if buf.len() >= 72 => u64::from_le_bytes(buf[64..72].try_into().unwrap_or([0; 8])),
                         _ => 0,
                     };
-                    // Auto-prune unconfirmed/reverted buys: if 0 tokens on-chain after 6s, remove ghost position.
+                    // Auto-prune unconfirmed/reverted buys after 6s; for confirmed live positions require
+                    // 3 consecutive zero-balance ticks (1.2s) before closing so a 1-tick RPC blip never triggers a duplicate close.
                     if raw_tok_bal == 0 {
-                        if now_secs.saturating_sub(pos.opened_at_secs) >= 6 {
+                        if pos.initial_tokens > 0.0 {
+                            let cnt = zero_ticks.entry(pos.mint).or_insert(0);
+                            *cnt = cnt.saturating_add(1);
+                            if *cnt < 3 {
+                                if let Some(prev_val) = last_ui.get(&pos.mint) {
+                                    live_ui_positions.push(prev_val.clone());
+                                }
+                                continue;
+                            }
+                            zero_ticks.remove(&pos.mint);
+                            last_ui.remove(&pos.mint);
+                            exit_mgr.remove_position(&pos.mint);
+                        } else if now_secs.saturating_sub(pos.opened_at_secs) >= 6 {
                             exit_mgr.remove_position(&pos.mint);
                         }
                         continue;
                     }
+                    zero_ticks.remove(&pos.mint);
                     let ui_tokens = raw_tok_bal as f64 / 1e6;
                     let init_toks = if pos.initial_tokens > 0.0 { pos.initial_tokens } else { ui_tokens };
                     let ui_price = if price_sol > 0.0 { price_sol } else if init_toks > 0.0 { pos.entry_price_sol / init_toks } else { 0.0 };
@@ -1030,7 +1051,7 @@ async fn main() {
                     }
                     // Keep position visible in Active Positions until raw_tok_bal == 0 is confirmed on-chain!
                     let m = bs58::encode(&pos.mint).into_string();
-                    live_ui_positions.push(json!({
+                    let ui_val = json!({
                         "id": format!("live_{}", &m[..m.len().min(12)]),
                         "mint": m,
                         "symbol": &m[..m.len().min(5)],
@@ -1045,7 +1066,9 @@ async fn main() {
                         "price": ui_price,
                         "realizedSol": 0.0,
                         "pendingSell": Value::Null
-                    }));
+                    });
+                    last_ui.insert(pos.mint, ui_val.clone());
+                    live_ui_positions.push(ui_val);
                 }
                 let _ = exit_out.send(json!({
                     "type": "event",

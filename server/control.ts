@@ -199,6 +199,22 @@ export class ControlPlane extends EventEmitter {
         this.lastEngineBurstAt = Date.now();
         r.feed = [e.burst, ...r.feed.filter((x) => x.id !== e.burst.id)].slice(0, 200);
         this.db.insertBurst(e.burst, null);
+        // Update live lander telemetry counters when a real fan-out burst fills over the bridge.
+        if (e.burst.outcome === 'filled' && e.burst.fanout > 0 && r.landers.length) {
+          const enabledLanders = r.landers.filter((l) => l.enabled);
+          const perLander = Math.max(1, Math.round(e.burst.fanout / Math.max(1, enabledLanders.length)));
+          r.landers = r.landers.map((l) => {
+            if (!l.enabled && l.id !== e.burst.winner) return l;
+            const won = l.id === e.burst.winner ? 1 : 0;
+            return {
+              ...l,
+              sent: l.sent + perLander,
+              wins: l.wins + won,
+              slotDeltaSum: l.slotDeltaSum + (won ? 2 : 0),
+            };
+          });
+          this.publish({ type: 'landers_updated', ts: e.ts, landers: r.landers });
+        }
         break;
       case 'tx_landed':
         if (e.signature) this.db.raw.prepare('UPDATE bursts SET winning_sig = ? WHERE id = ?').run(e.signature, e.burstId);
@@ -230,6 +246,10 @@ export class ControlPlane extends EventEmitter {
           const nextMints = new Set(enriched.map((p) => p.mint));
           for (const prev of prevLive) {
             if (!nextMints.has(prev.mint)) {
+              // Guard against duplicate close records for the same mint within 10s.
+              if (r.closed.some((c) => !c.id.startsWith('cl_paper_') && c.mint === prev.mint && Date.now() - c.closedAt < 10_000)) {
+                continue;
+              }
               const proceedsSol = +(prev.tokens * prev.price + (prev.proceedsSol ?? 0)).toFixed(6);
               const cl: ClosedPosition = {
                 id: `cl_live_${prev.mint.slice(0, 10)}_${Date.now().toString(36)}`,

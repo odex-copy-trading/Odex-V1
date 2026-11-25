@@ -52,8 +52,9 @@ export class Db {
     if (file !== ':memory:') mkdirSync(path.dirname(file), { recursive: true });
     this.raw = new DatabaseSync(file);
     this.raw.exec(SCHEMA);
-    // One-time idempotent fix for pre-0aacb42 CATBAL row that missed earlier partial TP/TWAP sell proceeds.
+    // One-time idempotent fixes for pre-0aacb42 CATBAL row and 1s duplicate FUMCHI glitch row.
     this.raw.exec("UPDATE closed_positions SET proceeds_sol = 0.3374 WHERE id = 'cl_live_GZvvGyyjJo_mwvks6r8' AND proceeds_sol < 0.15;");
+    this.raw.exec("DELETE FROM closed_positions WHERE symbol = 'FUMCHI' AND (closed_at - opened_at) < 3000;");
   }
   close() { this.raw.close(); }
   tx<T>(fn: () => T): T {

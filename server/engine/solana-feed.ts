@@ -710,22 +710,23 @@ export class SolanaLiveFeed {
     };
 
     try {
-      // Retry across 0ms -> 350ms -> 850ms -> 1500ms so launches are caught the moment Helius confirms them.
+      // Fast tight retry (0 -> 150 -> 350 -> 600 -> 900 -> 1250ms).
+      // When PumpPortal already gave us msg.signature, skip getSignaturesForAddress completely (saves 400-700ms!).
       let pumpIxAccounts: string[] | null = null;
-      const waitsMs = [0, 350, 500, 650];
+      const waitsMs = [0, 150, 200, 250, 300, 350];
       for (const wait of waitsMs) {
         if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         if (p.signature) {
           pumpIxAccounts = await fetchPumpBuyAccounts(p.signature);
           if (pumpIxAccounts) break;
-        }
-        const sigs = await fetchSigs();
-        for (const sig of sigs.slice(0, 2)) {
-          if (sig === p.signature) continue;
-          pumpIxAccounts = await fetchPumpBuyAccounts(sig);
+        } else {
+          const sigs = await fetchSigs();
+          for (const sig of sigs.slice(0, 2)) {
+            pumpIxAccounts = await fetchPumpBuyAccounts(sig);
+            if (pumpIxAccounts) break;
+          }
           if (pumpIxAccounts) break;
         }
-        if (pumpIxAccounts) break;
       }
       if (!pumpIxAccounts) return;
 
@@ -733,9 +734,16 @@ export class SolanaLiveFeed {
       if (realOpen.length >= 5 || realOpen.some((x) => x.mint === p.mint)) return;
       if (p.normSym) this.recentBoughtSymbols.set(p.normSym, Date.now());
 
-      // Preserve all remaining accounts from the matched Pump.fun Buy instruction
-      // (17 accounts for standard coins, 18 accounts including buyback_fee_recipient for Buyback coins).
-      const dexAccounts = [...pumpIxAccounts];
+      // Exact Pump.fun 2026 Buy remaining-accounts guard:
+      // - Standard coins: 17 accounts ([16] = bonding_curve_v2). Strip non-buyback 18th bundler accounts (prevents AnchorError 6074).
+      // - Buyback coins: 18 accounts ([17] = buyback_fee_recipient 3BpXnf...). Keep [17] (prevents AnchorError 6062).
+      const BUYBACK_FEE_RECIPIENT = '3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR';
+      let dexAccounts = [...pumpIxAccounts];
+      if (dexAccounts.length > 17 && dexAccounts[17] !== BUYBACK_FEE_RECIPIENT) {
+        dexAccounts = dexAccounts.slice(0, 17);
+      } else if (dexAccounts.length > 18) {
+        dexAccounts = dexAccounts.slice(0, 18);
+      }
       const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
       const userVolPda = deriveUserVolumeAccumulator(hotWallet);
       if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
