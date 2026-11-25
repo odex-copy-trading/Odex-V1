@@ -171,6 +171,7 @@ export class SolanaLiveFeed {
   private seenKolSigs = new Set<string>();
   private creatorLaunches = new Map<string, number[]>();
   private ruggedCreators = new Set<string>();
+  private liveCreators = new Map<string, string>();
   private solUsd = 0;
   private solBalance = 0;
   private wsolBalance = 0;
@@ -402,7 +403,25 @@ export class SolanaLiveFeed {
         }
       }
 
-      // 2. Live KOL Copy-Trade detection in Shadow mode (same-slot copy using KOL's exact buySizeSol & maxCurveReserveSol).
+      // 1c. Live Mode (RUNNING): instant Dev-Dump Exit + ruggedCreators learning + PumpPortal KOL Mirror Sell
+      if (msg.txType === 'sell' && msg.traderPublicKey && this.cp.engineStatus === 'RUNNING') {
+        const livePos = this.cp.snapshot().positions.find((p) => !p.id.startsWith('paper_') && p.mint === msg.mint);
+        if (livePos) {
+          const creator = this.liveCreators.get(msg.mint);
+          if (creator && msg.traderPublicKey === creator) {
+            this.ruggedCreators.add(creator);
+            this.cp.dispatchLiveMirrorSell(msg.mint, 'Dev dump');
+            return;
+          }
+          if (this.watchedKolKeys.has(msg.traderPublicKey)) {
+            const kol = this.cp.snapshot().kols.find((k) => k.pubkey === msg.traderPublicKey);
+            this.cp.dispatchLiveMirrorSell(msg.mint, kol?.label ?? 'KOL');
+            return;
+          }
+        }
+      }
+
+      // 2. Live KOL Copy-Trade detection (same-slot copy using KOL's exact buySizeSol & maxCurveReserveSol).
       if (msg.txType === 'buy' && msg.traderPublicKey && this.watchedKolKeys.has(msg.traderPublicKey)) {
         this.onKolBuySignal(msg, ws);
         return;
@@ -677,6 +696,8 @@ export class SolanaLiveFeed {
     symbol: string;
     name?: string;
     uri?: string;
+    kolId?: string;
+    kolWallet?: string;
   }) {
     // Always use primary paid Helius HTTP RPC for live account lookup (never fall back to rate-limited public mainnet-beta HTTP).
     const rpcUrl = this.endpoints.httpUrl;
@@ -850,16 +871,28 @@ export class SolanaLiveFeed {
       const realOpen = this.cp.snapshot().positions.filter((x) => !x.id.startsWith('paper_'));
       if (realOpen.length >= 5 || realOpen.some((x) => x.mint === p.mint)) return;
       if (p.normSym) this.recentBoughtSymbols.set(p.normSym, Date.now());
+      if (p.creator) {
+        this.liveCreators.set(p.mint, p.creator);
+        if (this.liveCreators.size > 500) {
+          const oldest = this.liveCreators.keys().next().value;
+          if (oldest) this.liveCreators.delete(oldest);
+        }
+      }
+      if (this.pumpWs?.readyState === WebSocket.OPEN) {
+        this.pumpWs.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [p.mint] }));
+      }
 
       console.log(`[solana-feed] Dispatching live Pump.fun buy (${fastLocal ? 'FAST-LOCAL' : 'TX-FALLBACK'}): $${p.symbol} (${p.buySizeSol} SOL, ${dexAccounts.length} accs, slot ${p.slot})`);
       this.cp.dispatchLiveTrigger({
-        kind: 'launch',
+        kind: p.kolId ? 'kol_buy' : 'launch',
         venue: p.venue,
         mint: p.mint,
         poolPda: p.bondingCurveKey,
         slot: p.slot,
         buySizeSol: p.buySizeSol,
         maxCurveReserveSol: p.maxCurveReserveSol,
+        kolId: p.kolId,
+        kolWallet: p.kolWallet,
         creator: p.creator,
         devBuySol: p.devBuySol,
         symbol: p.symbol,
@@ -1160,6 +1193,28 @@ export class SolanaLiveFeed {
       if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
       const maxAffordable = this.solBalance > 0.11 ? +(this.solBalance - 0.06).toFixed(4) : kol.buySizeSol;
       const liveBuySol = Math.max(0.05, Math.min(kol.buySizeSol, maxAffordable));
+      if (this.pumpWs?.readyState === WebSocket.OPEN) {
+        this.pumpWs.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [msg.mint] }));
+      }
+      if (ev.venue === 'Pump.fun' && (!msg.dexAccounts || msg.dexAccounts.length < 16)) {
+        const mintBuf = b58Decode(msg.mint);
+        const curveKey = msg.bondingCurveKey || (mintBuf.length === 32 ? derivePda([Buffer.from('bonding-curve'), mintBuf], PUMPFUN_PROGRAM) : null);
+        if (!curveKey) return;
+        void this.dispatchPumpLaunchLive({
+          venue: ev.venue,
+          mint: msg.mint,
+          bondingCurveKey: curveKey,
+          signature: msg.signature,
+          slot,
+          buySizeSol: liveBuySol,
+          maxCurveReserveSol: kol.maxCurveReserveSol,
+          devBuySol: msg.solAmount ?? liveBuySol,
+          symbol,
+          kolId: kol.id,
+          kolWallet: kol.pubkey,
+        });
+        return;
+      }
       console.log(`[solana-feed] Dispatching live KOL buy: $${symbol} via ${kol.label} (${liveBuySol} SOL [cfg ${kol.buySizeSol}], ${(msg.dexAccounts ?? []).length} accs)`);
       this.cp.dispatchLiveTrigger({
         kind: 'kol_buy',
