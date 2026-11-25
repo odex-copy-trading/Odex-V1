@@ -234,7 +234,7 @@ impl ExecutorService {
                 );
                 // Emit live open positions to Step 3 control plane so Overview Positions tab updates immediately.
                 let live_positions: Vec<telemetry::LivePositionPayload> = exits
-                    .snapshot_positions()
+                    .list_positions()
                     .into_iter()
                     .map(|p| {
                         let m = pubkey_to_bs58(&p.mint);

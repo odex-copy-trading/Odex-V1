@@ -593,6 +593,8 @@ export class SolanaLiveFeed {
         }
         this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, undefined, msg.creator);
       } else if (this.cp.engineStatus === 'RUNNING' && msg.bondingCurveKey) {
+        const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));
+        if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
         if (normSym) this.recentBoughtSymbols.set(normSym, ts);
         void this.dispatchPumpLaunchLive({
           venue: ev.venue,
@@ -1005,6 +1007,8 @@ export class SolanaLiveFeed {
     if (this.cp.engineStatus === 'SHADOW' && this.paper.size < 5 && !this.paper.has(msg.mint)) {
       this.openPaperPosition(ev, kol.buySizeSol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, msg.entryPriceSol);
     } else if (this.cp.engineStatus === 'RUNNING') {
+      const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));
+      if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
       this.cp.dispatchLiveTrigger({
         kind: 'kol_buy',
         venue: ev.venue,
