@@ -359,13 +359,30 @@ async fn submit_variant(
         ]
     });
 
-    let mut req = client.post(&v.endpoint_url).json(&payload);
-    if let Some(tok) = &v.auth_token {
-        if !tok.is_empty() {
-            req = req
-                .header("Authorization", format!("Bearer {tok}"))
-                .header("x-api-key", tok.as_str());
+    let mut target_url = v.endpoint_url.clone();
+    let effective_tok = v
+        .auth_token
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if target_url.contains("0slot.trade") {
+                std::env::var("WHAL_ZEROSLOT_API_KEY").ok().filter(|s| !s.is_empty())
+            } else {
+                None
+            }
+        });
+    if target_url.contains("0slot.trade") && !target_url.contains("api-key=") {
+        if let Some(ref tok) = effective_tok {
+            let sep = if target_url.contains('?') { '&' } else { '?' };
+            target_url = format!("{target_url}{sep}api-key={tok}");
         }
+    }
+
+    let mut req = client.post(&target_url).json(&payload);
+    if let Some(tok) = &effective_tok {
+        req = req
+            .header("Authorization", format!("Bearer {tok}"))
+            .header("x-api-key", tok.as_str());
     }
 
     match req.send().await {
