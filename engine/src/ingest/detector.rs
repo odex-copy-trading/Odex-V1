@@ -89,16 +89,27 @@ fn build_local_pumpfun_buy_accounts(
     creator: PubkeyBytes,
     is_token_2022: bool,
     is_mayhem: bool,
+    bundled_buy_accounts: &[PubkeyBytes],
 ) -> Vec<PubkeyBytes> {
-    let token_prog = if is_token_2022 {
-        crate::executor::TOKEN_2022_PROGRAM_ID
-    } else {
-        crate::executor::SPL_TOKEN_PROGRAM_ID
+    let pick = |idx: usize, fallback: PubkeyBytes| -> PubkeyBytes {
+        bundled_buy_accounts
+            .get(idx)
+            .copied()
+            .filter(|k| *k != [0u8; 32])
+            .unwrap_or(fallback)
     };
-    let fee_recipient = if is_mayhem { PUMP_FEE_MAYHEM } else { PUMP_FEE_STD };
-    let assoc_curve = find_pda(&[&bonding_curve, &token_prog, &mint], &ATA_PROGRAM_ID);
-    let creator_vault = find_pda(&[b"creator-vault", &creator], &PUMPFUN_PROGRAM_ID);
-    let bc_v2 = find_pda(&[b"bonding-curve-v2", &mint], &PUMPFUN_PROGRAM_ID);
+    let token_prog = pick(
+        8,
+        if is_token_2022 {
+            crate::executor::TOKEN_2022_PROGRAM_ID
+        } else {
+            crate::executor::SPL_TOKEN_PROGRAM_ID
+        },
+    );
+    let fee_recipient = pick(1, if is_mayhem { PUMP_FEE_MAYHEM } else { PUMP_FEE_STD });
+    let assoc_curve = pick(4, find_pda(&[&bonding_curve, &token_prog, &mint], &ATA_PROGRAM_ID));
+    let creator_vault = pick(9, find_pda(&[b"creator-vault", &creator], &PUMPFUN_PROGRAM_ID));
+    let bc_v2 = pick(16, find_pda(&[b"bonding-curve-v2", &mint], &PUMPFUN_PROGRAM_ID));
     vec![
         PUMP_GLOBAL,        // [0] global
         fee_recipient,      // [1] fee_recipient (standard vs mayhem)
@@ -478,6 +489,7 @@ impl SignalDetector {
                             launch.creator,
                             launch.is_token_2022,
                             launch.is_mayhem,
+                            &bundled_buy_accounts,
                         )
                     } else if !bundled_buy_accounts.is_empty() {
                         bundled_buy_accounts.clone()
