@@ -208,10 +208,19 @@ export class ControlPlane extends EventEmitter {
         const enriched = e.positions.map((p) => {
           const match = r.feed.find((f) => f.mint === p.mint && f.symbol && f.symbol !== 'TOKEN' && !p.mint.startsWith(f.symbol));
           const prev = prevLive.find((x) => x.mint === p.mint);
+          // Accumulate realized SOL from on-chain partial sells (Instant TP1 + TWAP drips) so final closed PnL includes ALL sells!
+          let proceedsSol = prev?.proceedsSol ?? p.proceedsSol ?? 0;
+          if (prev && prev.tokens > p.tokens + 1e-3 && p.price > 0) {
+            const soldTokens = prev.tokens - p.tokens;
+            const partialProceeds = soldTokens * p.price * 0.99;
+            proceedsSol = +(proceedsSol + partialProceeds).toFixed(6);
+          }
           return {
             ...p,
             symbol: match?.symbol ?? prev?.symbol ?? p.symbol,
             image: p.image ?? prev?.image ?? match?.image,
+            proceedsSol,
+            realizedSol: proceedsSol,
           };
         });
         // Detect real live positions that just closed on-chain so Closed, Win Rate, Realized PnL & PnL Calendar update!

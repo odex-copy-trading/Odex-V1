@@ -923,7 +923,7 @@ async fn main() {
                 .timeout(Duration::from_secs(2))
                 .build()
                 .unwrap_or_default();
-            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            let mut ticker = tokio::time::interval(Duration::from_millis(400));
             loop {
                 ticker.tick().await;
                 let open = exit_mgr.list_positions();
