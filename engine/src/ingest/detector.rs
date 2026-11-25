@@ -299,6 +299,9 @@ impl SignalDetector {
                     if !self.matches_launch_filter(&launch, bundled_dev_buy, &filter) {
                         continue;
                     }
+                    if launch.venue == Venue::PumpFun && bundled_buy_accounts.len() < 16 {
+                        continue;
+                    }
                     let opportunity_key =
                         compute_opportunity_key(&launch.mint, tx.slot, launch.strategy_id);
                     let dex_accounts = if !bundled_buy_accounts.is_empty() {
@@ -318,7 +321,7 @@ impl SignalDetector {
                         dex_accounts,
                         kind: TriggerKind::ZeroBlockLaunch {
                             creator: launch.creator,
-                            dev_buy_lamports: bundled_dev_buy,
+                            dev_buy_lamports: filter.default_buy_lamports,
                             name: launch.name,
                             symbol: launch.symbol,
                             uri: launch.uri,
@@ -476,7 +479,7 @@ mod tests {
                 },
                 DecodedInstruction {
                     program_id: PUMPFUN_PROGRAM_ID,
-                    accounts: vec![[0; 32], [0; 32], mint, curve],
+                    accounts: vec![[0; 32], [0; 32], mint, curve, [0; 32], [0; 32], [0; 32], [0; 32], [0; 32], [0; 32], [0; 32], [0; 32], [0; 32], [0; 32], [0; 32], [0; 32]],
                     data: dev_buy_data,
                 },
             ],
@@ -488,7 +491,7 @@ mod tests {
         match &events[0].kind {
             TriggerKind::ZeroBlockLaunch { symbol, dev_buy_lamports, .. } => {
                 assert_eq!(symbol, "ORCA");
-                assert_eq!(*dev_buy_lamports, 1_500_000_000);
+                assert_eq!(*dev_buy_lamports, 50_000_000);
             }
             _ => panic!("expected ZeroBlockLaunch"),
         }

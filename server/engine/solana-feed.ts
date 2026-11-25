@@ -364,8 +364,8 @@ export class SolanaLiveFeed {
         if (typeof subId !== 'number' || !val?.signature || val.err !== null) return;
         const logs = Array.isArray(val.logs) ? val.logs : [];
         if (subId === this.rpcPumpCreateSubId) {
-          // Only inspect Helius Create logs when PumpPortal WS is silent >5s so we never saturate Helius getTransaction.
-          const pumpSilent = this.pumpWs?.readyState !== WebSocket.OPEN || Date.now() - this.lastPumpMsgAt > 5_000;
+          // Only inspect Helius Create logs when PumpPortal WS is silent >3s so we never saturate Helius getTransaction.
+          const pumpSilent = this.pumpWs?.readyState !== WebSocket.OPEN || Date.now() - this.lastPumpMsgAt > 3_000;
           if (pumpSilent && logs.some((l) => l.includes('Instruction: Create') || l.includes('Instruction: CreateV2'))) {
             if (!this.seenPumpCreateSigs.has(val.signature)) {
               this.seenPumpCreateSigs.add(val.signature);
@@ -786,8 +786,10 @@ export class SolanaLiveFeed {
     const withinCurve = !msg.vSolInBondingCurve || msg.vSolInBondingCurve <= cfg.strategy.max_curve_reserve_sol;
     // Selective quality launch filter: 0.5–5.0 SOL dev buy sweet spot + non-empty metadata (name, symbol, uri)
     const hasMeta = Boolean(msg.name?.trim() && msg.symbol?.trim() && (msg.uri?.trim() || ev.image));
-    // Allow REST fallback launches up to 20s old (Pump.fun REST caches ~10-15s) during brief WS reconnects.
-    const isFreshForAutoBuy = !msg.fromFallback || (typeof msg.createdAtMs === 'number' && ts - msg.createdAtMs <= 20_000);
+    // Never auto-buy stale REST fallback launches in LIVE mode (Pump.fun REST caches 8-15s = +35..60 slots late).
+    // Allow REST fallback up to 20s only in SHADOW paper mode; LIVE mode requires real-time WS or Paid Helius WS.
+    const isFreshForAutoBuy = !msg.fromFallback
+      || (this.cp.engineStatus === 'SHADOW' && typeof msg.createdAtMs === 'number' && ts - msg.createdAtMs <= 20_000);
     // 15-minute duplicate-symbol cooldown so copycat/vamp clones (e.g., 3x $TOAD) are never bought back-to-back.
     const normSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const lastSymBuy = normSym ? (this.recentBoughtSymbols.get(normSym) ?? 0) : 0;

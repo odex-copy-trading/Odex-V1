@@ -33,7 +33,7 @@ use whal_engine::exits::{ExitEngine, ExitPolicy, LadderStep, LadderTrigger, Sell
 use whal_engine::ingest::{
     types::{compute_opportunity_key, pubkey_from_bs58, StrategyId, TriggerEvent, TriggerKind, WSOL_MINT},
     GeyserConfig, IngestEngine, KolRule, LaunchFilterConfig, OpportunityBus, PubkeyBytes,
-    ShredStreamConfig, Venue, WatchlistCache,
+    ShredStreamConfig, SignalDetector, Venue, WatchlistCache,
 };
 use whal_engine::metrics::EngineMetrics;
 use whal_engine::safety::{HardSafetyLimits, SafetyCircuitBreakers};
@@ -348,6 +348,23 @@ fn apply_bridge_exits(cmd: &Value, exits: &ExitEngine) {
     exits.update_policy(policy);
 }
 
+fn apply_bridge_launch_filter(cmd: &Value, detector: &SignalDetector) {
+    let cfg = cmd.get("config").unwrap_or(cmd);
+    let mut filter = LaunchFilterConfig::default();
+    if let Some(en) = cfg.pointer("/strategy/modes/pumpfun_create_snipe").and_then(|v| v.as_bool()) {
+        filter.enabled = en;
+    }
+    if let Some(sol) = cfg.pointer("/strategy/default_buy_sol").and_then(|v| v.as_f64()) {
+        filter.default_buy_lamports = (sol.clamp(0.01, 50.0) * 1_000_000_000.0) as u64;
+    }
+    info!(
+        enabled = filter.enabled,
+        default_buy_lamports = filter.default_buy_lamports,
+        "Hot-reloaded LaunchFilterConfig for LocalShred from bridge"
+    );
+    detector.update_launch_filter(filter);
+}
+
 fn apply_kol_upsert(cmd: &Value, watchlist: &WatchlistCache) -> Result<(), String> {
     let k = cmd.get("kol").unwrap_or(cmd);
     let id = k.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -386,6 +403,7 @@ struct BridgeContext {
     exit_engine: Arc<ExitEngine>,
     breakers: Arc<SafetyCircuitBreakers>,
     watchlist: WatchlistCache,
+    detector: Arc<SignalDetector>,
     bus: OpportunityBus,
     rpc_url: String,
     default_hot_wallet: PubkeyBytes,
@@ -517,6 +535,7 @@ async fn connect_bridge_once(
                             "config.apply" => {
                                 apply_bridge_config(&cmd, &ctx.executor, &ctx.rpc_url, ctx.default_hot_wallet);
                                 apply_bridge_exits(&cmd, &ctx.exit_engine);
+                                apply_bridge_launch_filter(&cmd, &ctx.detector);
                                 (true, None)
                             }
                             "kol.upsert" => match apply_kol_upsert(&cmd, &ctx.watchlist) {
@@ -1134,7 +1153,16 @@ async fn main() {
                 last_sent = slot;
                 let _ = slot_out.send(json!({
                     "type": "event",
-                    "event": { "type": "slot_tick", "ts": now_ms(), "slot": slot, "shredLatencyMs": 0 }
+                    "event": {
+                        "type": "slot_tick",
+                        "ts": now_ms(),
+                        "chain": {
+                            "slot": slot,
+                            "shredLatencyMs": 0,
+                            "nonces": { "ready": 0, "total": 0 },
+                            "ring": { "used": 0, "size": 64 }
+                        }
+                    }
                 }));
             }
         }
@@ -1175,6 +1203,7 @@ async fn main() {
         exit_engine,
         breakers,
         watchlist: ingest.watchlist.clone(),
+        detector: ingest.detector.clone(),
         bus: ingest.bus.clone(),
         rpc_url,
         default_hot_wallet: hot_wallet_pubkey,

@@ -84,6 +84,8 @@ pub struct LaunchFilterConfig {
     pub blocked_keywords: Vec<String>,
     /// Require non-empty metadata URI.
     pub require_metadata_uri: bool,
+    /// Bot own buy size in lamports when sniping a 0-block launch (hot-reloaded from strategy.default_buy_sol).
+    pub default_buy_lamports: u64,
 }
 
 impl Default for LaunchFilterConfig {
@@ -95,6 +97,7 @@ impl Default for LaunchFilterConfig {
             allowed_quote_mints: Vec::new(),
             blocked_keywords: Vec::new(),
             require_metadata_uri: true,
+            default_buy_lamports: 50_000_000,       // 0.05 SOL safe default until config.apply syncs
         }
     }
 }

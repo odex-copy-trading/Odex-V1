@@ -190,11 +190,25 @@ export class ControlPlane extends EventEmitter {
     const r = this.rt!;
     switch (e.type) {
       case 'nonces': r.nonces = e.nonces; this.publishConfig(); return;
-      case 'slot_tick':
-        if (e.chain.slot > 0) this.lastEngineSlotAt = Date.now();
-        r.chain = e.chain; r.balances = e.balances;
-        if (e.balances.sol > this.cfg.config.wallets.max_hot_wallet_sol) this.trip('hot_wallet_ceiling', `Hot wallet holds ${e.balances.sol.toFixed(3)} SOL, above the ${this.cfg.config.wallets.max_hot_wallet_sol} SOL ceiling`);
-        break;
+      case 'slot_tick': {
+        const raw = e as unknown as { chain?: EngineRuntime['chain']; balances?: EngineRuntime['balances']; slot?: number; shredLatencyMs?: number };
+        const nextSlot = raw.chain?.slot ?? (typeof raw.slot === 'number' ? raw.slot : 0);
+        if (nextSlot > 0) this.lastEngineSlotAt = Date.now();
+        if (raw.chain) {
+          r.chain = { ...r.chain, ...raw.chain };
+        } else if (nextSlot > 0) {
+          r.chain = { ...r.chain, slot: nextSlot, shredLatencyMs: raw.shredLatencyMs ?? r.chain.shredLatencyMs };
+        }
+        if (raw.balances && (raw.balances.sol > 0 || raw.balances.solUsd > 0)) {
+          r.balances = raw.balances;
+          if (raw.balances.sol > this.cfg.config.wallets.max_hot_wallet_sol) {
+            this.trip('hot_wallet_ceiling', `Hot wallet holds ${raw.balances.sol.toFixed(3)} SOL, above the ${this.cfg.config.wallets.max_hot_wallet_sol} SOL ceiling`);
+          }
+        }
+        // Normalize outgoing UI telemetry so consumers always see valid chain + balances
+        this.publish({ type: 'slot_tick', ts: e.ts, chain: r.chain, balances: r.balances });
+        return;
+      }
       case 'burst_dispatched':
         this.lastEngineBurstAt = Date.now();
         r.feed = [e.burst, ...r.feed.filter((x) => x.id !== e.burst.id)].slice(0, 200);
@@ -330,11 +344,8 @@ export class ControlPlane extends EventEmitter {
   ingestExternalEvent(e: TelemetryEvent, winningSig: string | null = null) {
     const now = Date.now();
     if (e.type === 'slot_tick') {
-      if (this.rt && now - this.lastEngineSlotAt < 5_000) return;
-      this.liveChain = e.chain;
       this.liveBalances = e.balances;
       if (this.rt) {
-        this.rt.chain = { ...this.rt.chain, slot: e.chain.slot, shredLatencyMs: e.chain.shredLatencyMs };
         this.rt.balances = {
           ...this.rt.balances,
           sol: e.balances.sol,
@@ -342,6 +353,11 @@ export class ControlPlane extends EventEmitter {
           usdc: e.balances.usdc,
           solUsd: e.balances.solUsd,
         };
+      }
+      if (this.rt && now - this.lastEngineSlotAt < 5_000) return;
+      this.liveChain = e.chain;
+      if (this.rt) {
+        this.rt.chain = { ...this.rt.chain, slot: e.chain.slot, shredLatencyMs: e.chain.shredLatencyMs };
       }
     } else if (e.type === 'burst_dispatched') {
       if (this.rt && now - this.lastEngineBurstAt < 10_000) return;
