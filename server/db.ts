@@ -52,6 +52,8 @@ export class Db {
     if (file !== ':memory:') mkdirSync(path.dirname(file), { recursive: true });
     this.raw = new DatabaseSync(file);
     this.raw.exec(SCHEMA);
+    // One-time idempotent fix for pre-0aacb42 CATBAL row that missed earlier partial TP/TWAP sell proceeds.
+    this.raw.exec("UPDATE closed_positions SET proceeds_sol = 0.3374 WHERE id = 'cl_live_GZvvGyyjJo_mwvks6r8' AND proceeds_sol < 0.15;");
   }
   close() { this.raw.close(); }
   tx<T>(fn: () => T): T {

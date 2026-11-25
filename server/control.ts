@@ -160,9 +160,10 @@ export class ControlPlane extends EventEmitter {
     const want = this.db.listKols();
     for (const k of rt?.kols ?? []) if (!want.some((w) => w.id === k.id)) await this.engine.command({ type: 'kol.remove', id: k.id }).catch(() => {});
     for (const k of want) await this.engine.command({ type: 'kol.upsert', kol: k }).catch(() => {});
-    // Auto-restore Paper Mode (SHADOW) across restarts/redeploys (never auto-resume live RUNNING for safety).
-    if (this.db.getMeta('engine_mode') === 'SHADOW' && rt?.engine.status === 'PAUSED') {
-      await this.engine.command({ type: 'control', status: 'SHADOW' }).catch(() => {});
+    // Auto-restore persisted engine mode (SHADOW or RUNNING) across restarts/redeploys so deploys never leave the bot stuck PAUSED.
+    const savedMode = this.db.getMeta('engine_mode');
+    if ((savedMode === 'SHADOW' || savedMode === 'RUNNING') && rt?.engine.status === 'PAUSED') {
+      await this.engine.command({ type: 'control', status: savedMode }).catch(() => {});
     }
     this.rt = this.engine.runtime();
     // Persist the engine's recent history (first run: simulator backfill).
