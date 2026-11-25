@@ -410,6 +410,7 @@ struct BridgeContext {
     breakers: Arc<SafetyCircuitBreakers>,
     watchlist: WatchlistCache,
     detector: Arc<SignalDetector>,
+    shredstream: Arc<whal_engine::ingest::ShredStreamIngestor>,
     bus: OpportunityBus,
     rpc_url: String,
     default_hot_wallet: PubkeyBytes,
@@ -585,7 +586,8 @@ async fn connect_bridge_once(
                                                 "Raydium CPMM" => Venue::RaydiumCpmm,
                                                 _ => Venue::PumpFun,
                                             };
-                                            let slot = t.get("slot").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let raw_slot = t.get("slot").and_then(|v| v.as_u64()).unwrap_or(0);
+                                            let slot = if raw_slot > 0 { raw_slot } else { ctx.shredstream.latest_slot() };
                                             let buy_size_sol = t.get("buySizeSol").and_then(|v| v.as_f64()).unwrap_or(0.1).clamp(0.01, 50.0);
                                             let max_curve_sol = t.get("maxCurveReserveSol").and_then(|v| v.as_f64()).unwrap_or(55.0);
                                             let dex_accounts: Vec<PubkeyBytes> = t
@@ -1222,6 +1224,7 @@ async fn main() {
         breakers,
         watchlist: ingest.watchlist.clone(),
         detector: ingest.detector.clone(),
+        shredstream: ingest.shredstream.clone(),
         bus: ingest.bus.clone(),
         rpc_url,
         default_hot_wallet: hot_wallet_pubkey,
