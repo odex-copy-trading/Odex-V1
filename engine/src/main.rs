@@ -261,6 +261,11 @@ fn apply_bridge_config(
         .or_else(|| cfg.pointer("/execution/buy_slot_ttl"))
         .and_then(|v| v.as_u64())
         .unwrap_or(4);
+    let slippage_bps = cfg
+        .pointer("/strategy/slippage_bps")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1800)
+        .clamp(800, 3500);
     let cu_limit = cfg
         .pointer("/landers/tx/compute_unit_limit")
         .or_else(|| cfg.pointer("/execution/compute_unit_limit"))
@@ -287,9 +292,10 @@ fn apply_bridge_config(
         },
         lookup_tables: vec![],
         buy_slot_ttl,
+        slippage_bps,
         landers,
     });
-    info!(enabled_landers = enabled_count, buy_slot_ttl, "Hot-reloaded ExecutorRuntimeConfig from bridge");
+    info!(enabled_landers = enabled_count, buy_slot_ttl, slippage_bps, "Hot-reloaded ExecutorRuntimeConfig from bridge");
 }
 
 fn apply_bridge_exits(cmd: &Value, exits: &ExitEngine) {
@@ -619,11 +625,13 @@ async fn connect_bridge_once(
                                                     .and_then(|v| v.as_str())
                                                     .and_then(|s| pubkey_from_bs58(s).ok())
                                                     .unwrap_or([0u8; 32]);
+                                                let dev_buy_sol = t.get("devBuySol").and_then(|v| v.as_f64()).unwrap_or(0.0);
                                                 (
                                                     StrategyId::PumpFunCreateV2Snipe,
                                                     TriggerKind::ZeroBlockLaunch {
                                                         creator,
                                                         dev_buy_lamports: (buy_size_sol * 1_000_000_000.0) as u64,
+                                                        initial_dev_buy_lamports: (dev_buy_sol.max(0.0) * 1_000_000_000.0) as u64,
                                                         name: t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                                         symbol: t.get("symbol").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                                         uri: t.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -876,6 +884,7 @@ async fn main() {
             },
             lookup_tables: vec![],
             buy_slot_ttl: 4,
+            slippage_bps: 1800,
             landers: vec![],
         },
         exec_tel_tx,

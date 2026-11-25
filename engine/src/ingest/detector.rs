@@ -382,6 +382,7 @@ impl SignalDetector {
                         kind: TriggerKind::ZeroBlockLaunch {
                             creator: launch.creator,
                             dev_buy_lamports: filter.default_buy_lamports,
+                            initial_dev_buy_lamports: bundled_dev_buy,
                             name: launch.name,
                             symbol: launch.symbol,
                             uri: launch.uri,

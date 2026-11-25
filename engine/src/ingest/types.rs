@@ -138,6 +138,7 @@ pub enum TriggerKind {
     ZeroBlockLaunch {
         creator: PubkeyBytes,
         dev_buy_lamports: u64,
+        initial_dev_buy_lamports: u64,
         name: String,
         symbol: String,
         uri: String,

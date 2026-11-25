@@ -32,6 +32,7 @@ pub struct ExecutorRuntimeConfig {
     pub v1_config: V1TransactionConfig,
     pub lookup_tables: Vec<PubkeyBytes>,
     pub buy_slot_ttl: u64,
+    pub slippage_bps: u64,
     pub landers: Vec<LanderConfig>,
 }
 
@@ -223,6 +224,7 @@ impl ExecutorService {
             cfg.v1_config,
             &cfg.lookup_tables,
             cfg.buy_slot_ttl,
+            cfg.slippage_bps,
         );
 
         let ts = SystemTime::now()

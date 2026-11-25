@@ -199,6 +199,7 @@ impl LanderFanOut {
     }
 
     /// Generates distinct-signature variants across all enabled SWQoS providers.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_variants(
         &self,
         trigger: &TriggerEvent,
@@ -208,6 +209,7 @@ impl LanderFanOut {
         base_v1_cfg: V1TransactionConfig,
         lookup_tables: &[PubkeyBytes],
         buy_slot_ttl: u64,
+        slippage_bps: u64,
     ) -> Vec<VariantDispatch> {
         let mut variants = Vec::new();
         for lander in landers {
@@ -239,8 +241,33 @@ impl LanderFanOut {
 
                 let is_token_2022_mint = trigger.dex_accounts.contains(&TOKEN_2022_PROGRAM_ID);
                 let use_standalone_guard_for_pumpswap = trigger.venue == Venue::PumpSwap;
-                // `buy_exact_sol_in` strictly caps SOL spend at buy_size; keep min_tokens_out = 1 so small (0.05-0.3 SOL) test buys never falsely revert on slippage.
-                let min_tokens_out: u64 = 1;
+                // Compute on-chain Pump.fun slippage cap (`min_tokens_out`) from Slot-0 x*y=k reserves
+                // so pre-pumped sniper tops (>slippage_bps above post-dev-buy price) revert with 0 SOL tip paid.
+                let min_tokens_out: u64 = match &trigger.kind {
+                    TriggerKind::ZeroBlockLaunch {
+                        dev_buy_lamports,
+                        initial_dev_buy_lamports,
+                        ..
+                    } if trigger.venue == Venue::PumpFun => {
+                        const V_SOL_INIT: u128 = 30_000_000_000;
+                        const V_TOK_INIT: u128 = 1_073_000_000_000_000;
+                        const K: u128 = V_SOL_INIT * V_TOK_INIT;
+                        let dev_in = if *initial_dev_buy_lamports > 0 {
+                            (*initial_dev_buy_lamports as u128 * 99) / 100
+                        } else {
+                            // Conservative fallback if bridge didn't supply dev buy size
+                            2_000_000_000u128
+                        };
+                        let v_sol = V_SOL_INIT + dev_in;
+                        let v_tok = K / v_sol;
+                        let net_in = ((*dev_buy_lamports).clamp(10_000_000, 50_000_000_000) as u128 * 99) / 100;
+                        let expected = (v_tok * net_in) / (v_sol + net_in);
+                        let slip = slippage_bps.clamp(800, 3500) as u128;
+                        let floored = (expected * (10_000 - slip)) / 10_000;
+                        (floored as u64).max(1)
+                    }
+                    _ => 1,
+                };
 
                 let params = BuildVariantParams {
                     version,
