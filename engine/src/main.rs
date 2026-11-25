@@ -871,7 +871,6 @@ async fn main() {
                     }
                     let ui_tokens = raw_tok_bal as f64 / 1e6;
                     let ui_price = if price_sol > 0.0 { price_sol } else { pos.entry_price_sol / ui_tokens };
-                    let mut closed_now = false;
                     if raw_tok_bal > 0 && price_sol > 0.0 {
                         if let Some(order) = exit_mgr.on_price_update(&pos.mint, price_sol * ui_tokens, v_sol_lamports, now_secs) {
                             info!(
@@ -911,31 +910,26 @@ async fn main() {
                                 cpi_accounts,
                             };
                             let _ = exit_exec.execute_sell(params).await;
-                            if order.close_account || order.sell_pct >= 100 {
-                                exit_mgr.remove_position(&pos.mint);
-                                closed_now = true;
-                            }
                         }
                     }
-                    if !closed_now {
-                        let m = bs58::encode(&pos.mint).into_string();
-                        live_ui_positions.push(json!({
-                            "id": format!("live_{}", &m[..m.len().min(12)]),
-                            "mint": m,
-                            "symbol": &m[..m.len().min(5)],
-                            "venue": pos.venue,
-                            "kolId": Value::Null,
-                            "openedAt": pos.opened_at_secs * 1_000,
-                            "openedSlot": pos.opened_slot,
-                            "entrySol": pos.entry_price_sol,
-                            "initialTokens": ui_tokens,
-                            "tokens": ui_tokens,
-                            "entryPrice": if ui_tokens > 0.0 { pos.entry_price_sol / ui_tokens } else { pos.entry_price_sol },
-                            "price": ui_price,
-                            "realizedSol": 0.0,
-                            "pendingSell": Value::Null
-                        }));
-                    }
+                    // Keep position visible in Active Positions until raw_tok_bal == 0 is confirmed on-chain!
+                    let m = bs58::encode(&pos.mint).into_string();
+                    live_ui_positions.push(json!({
+                        "id": format!("live_{}", &m[..m.len().min(12)]),
+                        "mint": m,
+                        "symbol": &m[..m.len().min(5)],
+                        "venue": pos.venue,
+                        "kolId": Value::Null,
+                        "openedAt": pos.opened_at_secs * 1_000,
+                        "openedSlot": pos.opened_slot,
+                        "entrySol": pos.entry_price_sol,
+                        "initialTokens": ui_tokens,
+                        "tokens": ui_tokens,
+                        "entryPrice": if ui_tokens > 0.0 { pos.entry_price_sol / ui_tokens } else { pos.entry_price_sol },
+                        "price": ui_price,
+                        "realizedSol": 0.0,
+                        "pendingSell": Value::Null
+                    }));
                 }
                 let _ = exit_out.send(json!({
                     "type": "event",

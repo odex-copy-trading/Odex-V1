@@ -68,10 +68,14 @@ pub fn build_protected_sell_instructions(p: &SellTxParams) -> Vec<InstructionSpe
         native_data.extend_from_slice(&DISC_PUMPFUN_SELL);
         native_data.extend_from_slice(&sell_amount.to_le_bytes());
         native_data.extend_from_slice(&p.min_quote_out.to_le_bytes());
-        // Pump.fun sell account order puts creator_vault(8) before token_program(9) compared to buy(8=token_prog, 9=creator_vault)
+        // Pump.fun 2026 sell account layout: swap creator_vault(8) & token_program(9),
+        // and strip buy-only global/user volume accumulators [12..14] so fee_config & fee_program sit at [12..14].
         let mut native_accs = p.cpi_accounts.clone();
         if p.venue == Venue::PumpFun && native_accs.len() >= 10 {
             native_accs.swap(8, 9);
+            if native_accs.len() >= 16 {
+                native_accs.drain(12..14);
+            }
         }
         ixs.push(InstructionSpec {
             label: "direct_native_dex_sell",
