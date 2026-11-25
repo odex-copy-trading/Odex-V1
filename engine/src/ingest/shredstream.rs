@@ -77,9 +77,7 @@ impl ShredStreamIngestor {
         let triggers = self.detector.inspect_tx(tx);
         let count = triggers.len();
         for ev in triggers {
-            if let Some(tel) = &self.telemetry {
-                tel.emit_trigger(&ev);
-            }
+            // Publish directly to OpportunityBus without flooding the remote Control Plane WS with raw shred events.
             self.bus.publish(ev);
         }
         count

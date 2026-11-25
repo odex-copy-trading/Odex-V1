@@ -173,12 +173,12 @@ impl ExitEngine {
             pos.breakeven_armed = true;
         }
 
-        // 1b. Fhbh1D 2–3s Fail-Fast Stop-Loss: dump 100% at -6% if momentum fails early
-        if held_secs >= 2
+        // 1b. Fail-Fast Stop-Loss: dump 100% at -12% between 4–12s if momentum fails (avoids -6% wick shakeouts on +1/+2 slot entries)
+        if held_secs >= 4
             && held_secs <= 12
             && mult > 0.0
-            && mult <= 0.94
-            && pos.peak_price_sol < entry_unit_price * 1.10
+            && mult <= 0.88
+            && pos.peak_price_sol < entry_unit_price * 1.12
         {
             return Some(ExitOrder {
                 mint: *mint,

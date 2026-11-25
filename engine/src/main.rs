@@ -490,6 +490,7 @@ async fn connect_bridge_once(
                                     ctx.breakers.reset();
                                 }
                                 ctx.executor.set_shadow_mode(next == "SHADOW");
+                                ctx.executor.set_paused(next != "RUNNING");
                                 if let Ok(mut st) = ctx.engine_status.write() {
                                     *st = next.to_string();
                                 }
@@ -502,6 +503,7 @@ async fn connect_bridge_once(
                             }
                             "kill" => {
                                 let reason = cmd.get("reason").and_then(|v| v.as_str()).unwrap_or("Emergency kill");
+                                ctx.executor.set_paused(true);
                                 if let Ok(mut st) = ctx.engine_status.write() {
                                     *st = "KILLED".to_string();
                                 }

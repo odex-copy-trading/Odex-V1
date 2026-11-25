@@ -42,6 +42,7 @@ pub struct ExecutorService {
     fanout: Arc<LanderFanOut>,
     cfg: Arc<RwLock<ExecutorRuntimeConfig>>,
     shadow_mode: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     telemetry_tx: mpsc::Sender<ExecutorTelemetryEvent>,
     exit_engine: Option<Arc<crate::exits::ExitEngine>>,
 }
@@ -70,6 +71,7 @@ impl ExecutorService {
             fanout,
             cfg: Arc::new(RwLock::new(cfg)),
             shadow_mode: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(true)),
             telemetry_tx,
             exit_engine,
         }
@@ -133,6 +135,10 @@ impl ExecutorService {
         self.shadow_mode.store(enabled, Ordering::Relaxed);
     }
 
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
+    }
+
     pub fn hot_reload(&self, next: ExecutorRuntimeConfig) {
         if let Ok(mut g) = self.cfg.write() {
             *g = next;
@@ -162,6 +168,28 @@ impl ExecutorService {
     }
 
     pub async fn execute_trigger(&self, trigger: TriggerEvent) -> BurstDispatchSummary {
+        if self.paused.load(Ordering::Relaxed) {
+            return BurstDispatchSummary {
+                slot: trigger.trigger_slot,
+                total_sent: 0,
+                accepted: 0,
+                winner: None,
+                winning_signature: None,
+                results: Vec::new(),
+            };
+        }
+        if let Some(exits) = &self.exit_engine {
+            if exits.list_positions().len() >= 5 || exits.get_position(&trigger.mint).is_some() {
+                return BurstDispatchSummary {
+                    slot: trigger.trigger_slot,
+                    total_sent: 0,
+                    accepted: 0,
+                    winner: None,
+                    winning_signature: None,
+                    results: Vec::new(),
+                };
+            }
+        }
         let cfg = self.cfg.read().expect("executor config lock").clone();
         let shadow = self.shadow_mode.load(Ordering::Relaxed);
         let variants = self.fanout.build_variants(

@@ -90,11 +90,11 @@ impl Default for LaunchFilterConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            min_dev_buy_lamports: 100_000_000,      // 0.1 SOL
-            max_dev_buy_lamports: 50_000_000_000,   // 50 SOL
+            min_dev_buy_lamports: 500_000_000,      // 0.5 SOL (1:1 with Paper Mode)
+            max_dev_buy_lamports: 5_000_000_000,    // 5.0 SOL (1:1 with Paper Mode)
             allowed_quote_mints: Vec::new(),
             blocked_keywords: Vec::new(),
-            require_metadata_uri: false,
+            require_metadata_uri: true,
         }
     }
 }
