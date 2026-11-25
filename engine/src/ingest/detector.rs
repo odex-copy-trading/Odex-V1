@@ -156,10 +156,12 @@ fn parse_launch_ix(ix: &DecodedInstruction) -> Option<ParsedLaunch> {
     if ix.program_id == PUMPFUN_PROGRAM_ID
         && (disc == DISC_PUMPFUN_CREATE_V2 || disc == DISC_PUMPFUN_CREATE_V2_TOKEN2022)
     {
-        // Pump.fun CreateV2: [mint(0), mint_auth(1), bonding_curve(2), ..., user/creator(7)]
+        // Legacy create: [mint(0), mint_auth(1), bonding_curve(2), ..., user(7)].
+        // Token-2022 create_v2: mpl_token_metadata & metadata removed -> user/creator is at index 5 (7 is Token-2022 program!).
         let mint = *ix.accounts.get(0)?;
         let pool_pda = *ix.accounts.get(2)?;
-        let creator = *ix.accounts.get(7).or_else(|| ix.accounts.last())?;
+        let creator_idx = if disc == DISC_PUMPFUN_CREATE_V2_TOKEN2022 { 5 } else { 7 };
+        let creator = *ix.accounts.get(creator_idx).or_else(|| ix.accounts.last())?;
         let mut off = 8;
         let name = read_borsh_string(&ix.data, &mut off).unwrap_or_default();
         let symbol = read_borsh_string(&ix.data, &mut off).unwrap_or_default();

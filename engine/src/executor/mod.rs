@@ -45,6 +45,7 @@ pub struct ExecutorService {
     paused: Arc<AtomicBool>,
     telemetry_tx: mpsc::Sender<ExecutorTelemetryEvent>,
     exit_engine: Option<Arc<crate::exits::ExitEngine>>,
+    recent_buy_mints: dashmap::DashMap<PubkeyBytes, u64>,
 }
 
 impl ExecutorService {
@@ -74,6 +75,7 @@ impl ExecutorService {
             paused: Arc::new(AtomicBool::new(true)),
             telemetry_tx,
             exit_engine,
+            recent_buy_mints: dashmap::DashMap::new(),
         }
     }
 
@@ -177,6 +179,27 @@ impl ExecutorService {
                 winning_signature: None,
                 results: Vec::new(),
             };
+        }
+        // Atomic in-flight + 60s mint dedupe so LocalShred (slot 0) and whal-api bridge (slot +1) never double-buy.
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if let Some(prev) = self.recent_buy_mints.get(&trigger.mint) {
+            if now_ms.saturating_sub(*prev) < 60_000 {
+                return BurstDispatchSummary {
+                    slot: trigger.trigger_slot,
+                    total_sent: 0,
+                    accepted: 0,
+                    winner: None,
+                    winning_signature: None,
+                    results: Vec::new(),
+                };
+            }
+        }
+        self.recent_buy_mints.insert(trigger.mint, now_ms);
+        if self.recent_buy_mints.len() > 500 {
+            self.recent_buy_mints.retain(|_, &mut t| now_ms.saturating_sub(t) < 60_000);
         }
         if let Some(exits) = &self.exit_engine {
             if exits.list_positions().len() >= 5 || exits.get_position(&trigger.mint).is_some() {

@@ -151,6 +151,27 @@ pub fn derive_seeded_pubkey(base: &PubkeyBytes, seed: &str, owner: &PubkeyBytes)
     out
 }
 
+/// Derives Solana PDA `["user_volume_accumulator", user]` under Pump.fun (`6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`).
+/// Required on every Pump.fun Buy (`accounts[13]`) so LocalShred triggers never pass the dev's PDA (`Custom(2006)`).
+pub fn derive_pumpfun_user_volume_accumulator(user: &PubkeyBytes) -> PubkeyBytes {
+    const PDA_MARKER: &[u8] = b"ProgramDerivedAddress";
+    for bump in (0u8..=255).rev() {
+        let mut h = Sha256::new();
+        h.update(b"user_volume_accumulator");
+        h.update(user);
+        h.update([bump]);
+        h.update(crate::ingest::detector::PUMPFUN_PROGRAM_ID);
+        h.update(PDA_MARKER);
+        let digest = h.finalize();
+        let mut candidate = [0u8; 32];
+        candidate.copy_from_slice(&digest);
+        if ed25519_dalek::VerifyingKey::from_bytes(&candidate).is_err() {
+            return candidate;
+        }
+    }
+    *user
+}
+
 /// Builds full mainnet DEX CPI account metas from the triggering KOL/Dev transaction's
 /// captured `dex_accounts`, substituting `hot_wallet` and `ephemeral_ata` into the venue's
 /// exact user & token-account slots while preserving all pool/vault/fee/authority PDAs.
@@ -172,14 +193,16 @@ pub fn build_venue_cpi_accounts(
             //  4: assoc_bonding_curve(w), 5: assoc_user(w -> ephemeral_ata),
             //  6: user(sw -> hot_wallet), 7: system(ro), 8: token_prog(ro),
             //  9: creator_vault(w), 10: event_authority(ro), 11: program(ro), ...]
+            let user_vol_pda = derive_pumpfun_user_volume_accumulator(&hot_wallet);
             dex_accounts
                 .iter()
                 .enumerate()
                 .map(|(i, &pk)| match i {
-                    1 | 3 | 4 | 9 | 12 | 13 | 17 => AccountMetaSpec { pubkey: pk, is_signer: false, is_writable: true },
+                    1 | 3 | 4 | 9 | 12 | 17 => AccountMetaSpec { pubkey: pk, is_signer: false, is_writable: true },
                     5 => AccountMetaSpec { pubkey: ephemeral_ata, is_signer: false, is_writable: true },
                     6 => AccountMetaSpec { pubkey: hot_wallet, is_signer: true, is_writable: true },
                     8 => AccountMetaSpec { pubkey: token_program, is_signer: false, is_writable: false },
+                    13 => AccountMetaSpec { pubkey: user_vol_pda, is_signer: false, is_writable: true },
                     _ => AccountMetaSpec { pubkey: pk, is_signer: false, is_writable: false },
                 })
                 .collect()

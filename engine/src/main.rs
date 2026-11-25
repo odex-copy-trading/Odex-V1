@@ -952,12 +952,14 @@ async fn main() {
             let mut ticker = tokio::time::interval(Duration::from_millis(400));
             let mut zero_ticks: std::collections::HashMap<PubkeyBytes, u8> = std::collections::HashMap::new();
             let mut last_ui: std::collections::HashMap<PubkeyBytes, Value> = std::collections::HashMap::new();
+            let mut last_sell_at: std::collections::HashMap<PubkeyBytes, u64> = std::collections::HashMap::new();
             loop {
                 ticker.tick().await;
                 let open = exit_mgr.list_positions();
                 if open.is_empty() {
                     zero_ticks.clear();
                     last_ui.clear();
+                    last_sell_at.clear();
                     continue;
                 }
                 let now_secs = SystemTime::now()
@@ -1024,6 +1026,7 @@ async fn main() {
                             }
                             zero_ticks.remove(&pos.mint);
                             last_ui.remove(&pos.mint);
+                            last_sell_at.remove(&pos.mint);
                             exit_mgr.remove_position(&pos.mint);
                         } else if now_secs.saturating_sub(pos.opened_at_secs) >= 6 {
                             exit_mgr.remove_position(&pos.mint);
@@ -1034,8 +1037,13 @@ async fn main() {
                     let ui_tokens = raw_tok_bal as f64 / 1e6;
                     let init_toks = if pos.initial_tokens > 0.0 { pos.initial_tokens } else { ui_tokens };
                     let ui_price = if price_sol > 0.0 { price_sol } else if init_toks > 0.0 { pos.entry_price_sol / init_toks } else { 0.0 };
-                    if raw_tok_bal > 0 && price_sol > 0.0 {
+                    let sell_cooling_down = last_sell_at
+                        .get(&pos.mint)
+                        .map(|&t| now_ms().saturating_sub(t) < 2_500)
+                        .unwrap_or(false);
+                    if raw_tok_bal > 0 && price_sol > 0.0 && !sell_cooling_down {
                         if let Some(order) = exit_mgr.on_price_update(&pos.mint, price_sol, ui_tokens, v_sol_lamports, now_secs) {
+                            last_sell_at.insert(pos.mint, now_ms());
                             info!(
                                 mint = %bs58::encode(&pos.mint).into_string(),
                                 sell_pct = order.sell_pct,
