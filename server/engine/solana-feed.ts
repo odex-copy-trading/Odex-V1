@@ -52,6 +52,7 @@ function isOnEd25519Curve(buf: Buffer): boolean {
 const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 const PUMP_GLOBAL = '4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf';
 const PUMP_FEE_RECIPIENT = '62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV';
+const PUMP_MAYHEM_FEE_RECIPIENT = 'GesfTA3X2arioaHp8bbKdjG9vJtskViWACZoYvxp4twS';
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 const PUMP_EVENT_AUTH = 'Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1';
 const PUMP_GLOBAL_VOL = 'Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y';
@@ -943,101 +944,61 @@ export class SolanaLiveFeed {
     const userVolPda = deriveUserVolumeAccumulator(hotWallet);
     const bcV2Pda = deriveBondingCurveV2(p.mint);
 
-    // Fast path (~80-120ms, zero `confirmed` wait!): read mint owner + bonding_curve creator at `processed`
-    // and derive all 17 Pump.fun Buy accounts locally in <1ms for standard coins.
+    // Fast path (~80ms, zero `confirmed` wait!): read exact on-chain mint owner, bonding_curve.creator [49..81],
+    // and mayhem flag [81] at `processed` commitment, then build all 18 Pump.fun Buy accounts locally:
+    // - exact on-chain creator_vault -> 0% Custom(2006)
+    // - exact mayhem vs standard fee_recipient -> 0% Custom(6000)
+    // - exact bonding_curve_v2 + verified Global buyback_fee_recipient -> 0% Custom(6062/6074)
     const tryFastLocalAccounts = async (): Promise<string[] | null> => {
       if (!hotWallet || !userVolPda || !bcV2Pda) return null;
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 900);
-      try {
-        const res = await fetch(rpcUrl, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          signal: ctrl.signal,
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'getMultipleAccounts',
-            params: [[p.mint, p.bondingCurveKey], { encoding: 'base64', commitment: 'processed' }],
-          }),
-        });
-        if (!res.ok) return null;
-        const j = await res.json() as {
-          result?: { value?: Array<{ owner?: string; data?: [string, string] } | null> };
-        };
-        const [mintAcc, curveAcc] = j.result?.value ?? [];
-        const tokenProg = mintAcc?.owner;
-        if (
-          tokenProg !== 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' &&
-          tokenProg !== 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-        ) {
-          return null;
-        }
-        const curveB64 = curveAcc?.data?.[0];
-        if (!curveB64) return null;
-        const curveBuf = Buffer.from(curveB64, 'base64');
-        if (curveBuf.length < 81) return null;
-        // Only fall back to getTransaction if mayhem/cashback/buyback flag bytes are set (not timestamp/reserve bytes).
-        const hasSpecialFlags =
-          (curveBuf.length > 81 && curveBuf[81] !== 0) ||
-          (curveBuf.length > 82 && curveBuf[82] !== 0) ||
-          (curveBuf.length > 124 && curveBuf[124] !== 0);
-        if (hasSpecialFlags) return null;
-        const creatorVault = deriveCreatorVault(curveBuf.subarray(49, 81));
-        const assocCurve = deriveAta(p.bondingCurveKey, tokenProg, p.mint);
-        if (!creatorVault || !assocCurve) return null;
-        return [
-          PUMP_GLOBAL,
-          PUMP_FEE_RECIPIENT,
-          p.mint,
-          p.bondingCurveKey,
-          assocCurve,
-          hotWallet,
-          hotWallet,
-          SYSTEM_PROGRAM,
-          tokenProg,
-          creatorVault,
-          PUMP_EVENT_AUTH,
-          PUMPFUN_PROGRAM,
-          PUMP_GLOBAL_VOL,
-          userVolPda,
-          PUMP_FEE_CONFIG,
-          PUMP_FEE_PROGRAM,
-          bcV2Pda,
-        ];
-      } catch {
-        return null;
-      } finally {
-        clearTimeout(t);
-      }
-    };
-
-    try {
-      // 0. Instant 0.1ms local 18-account Pump.fun Buy builder (ZERO RPC calls, ZERO confirmed wait!).
-      // Uses verified Global buyback_fee_recipients + local PDAs (assocCurve, creatorVault, userVol, bondingCurveV2).
-      let dexAccounts: string[] | null = null;
-      let fastLocal = false;
-      if (p.prefetchedDexAccounts && p.prefetchedDexAccounts.length >= 16) {
-        dexAccounts = [...p.prefetchedDexAccounts];
-        if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
-        if (bcV2Pda && dexAccounts.length >= 17) dexAccounts[16] = bcV2Pda;
-        fastLocal = true;
-      } else if (p.creator && hotWallet && userVolPda && bcV2Pda) {
-        const creatorBuf = b58Decode(p.creator);
-        const creatorVault = creatorBuf.length === 32 ? deriveCreatorVault(creatorBuf) : null;
-        const assocCurve = deriveAta(p.bondingCurveKey, PUMP_TOKEN_2022, p.mint);
-        if (creatorVault && assocCurve) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 150));
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 900);
+        try {
+          const res = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            signal: ctrl.signal,
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'getMultipleAccounts',
+              params: [[p.mint, p.bondingCurveKey], { encoding: 'base64', commitment: 'processed' }],
+            }),
+          });
+          if (!res.ok) continue;
+          const j = await res.json() as {
+            result?: { value?: Array<{ owner?: string; data?: [string, string] } | null> };
+          };
+          const [mintAcc, curveAcc] = j.result?.value ?? [];
+          const tokenProg = mintAcc?.owner;
+          if (
+            tokenProg !== PUMP_TOKEN_2022 &&
+            tokenProg !== 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+          ) {
+            continue;
+          }
+          const curveB64 = curveAcc?.data?.[0];
+          if (!curveB64) continue;
+          const curveBuf = Buffer.from(curveB64, 'base64');
+          if (curveBuf.length < 81) continue;
+          const creatorVault = deriveCreatorVault(curveBuf.subarray(49, 81));
+          const assocCurve = deriveAta(p.bondingCurveKey, tokenProg, p.mint);
+          if (!creatorVault || !assocCurve) return null;
+          const isMayhem = curveBuf.length > 81 && curveBuf[81] !== 0;
+          const feeRecipient = isMayhem ? PUMP_MAYHEM_FEE_RECIPIENT : PUMP_FEE_RECIPIENT;
           const buybackRecip = PUMP_BUYBACK_RECIPIENTS[(p.slot || 0) % PUMP_BUYBACK_RECIPIENTS.length];
-          dexAccounts = [
+          return [
             PUMP_GLOBAL,
-            PUMP_FEE_RECIPIENT,
+            feeRecipient,
             p.mint,
             p.bondingCurveKey,
             assocCurve,
             hotWallet,
             hotWallet,
             SYSTEM_PROGRAM,
-            PUMP_TOKEN_2022,
+            tokenProg,
             creatorVault,
             PUMP_EVENT_AUTH,
             PUMPFUN_PROGRAM,
@@ -1048,8 +1009,28 @@ export class SolanaLiveFeed {
             bcV2Pda,
             buybackRecip,
           ];
-          fastLocal = true;
+        } catch {
+          continue;
+        } finally {
+          clearTimeout(t);
         }
+      }
+      return null;
+    };
+
+    try {
+      // 0. If paid Helius WS already extracted exact Pump.fun Buy accounts, dispatch in <1ms;
+      // otherwise run the ~80ms processed curve read + local 18-account builder (keeps +1 to +2 slot speed with 0% 2006/6000/6062/6074!).
+      let dexAccounts: string[] | null = null;
+      let fastLocal = false;
+      if (p.prefetchedDexAccounts && p.prefetchedDexAccounts.length >= 16) {
+        dexAccounts = [...p.prefetchedDexAccounts];
+        if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
+        if (bcV2Pda && dexAccounts.length >= 17) dexAccounts[16] = bcV2Pda;
+        fastLocal = true;
+      } else {
+        dexAccounts = await tryFastLocalAccounts();
+        fastLocal = dexAccounts !== null;
       }
 
       // 2. Fallback for Buyback/Cashback/Mayhem coins (or not yet at processed): poll getTransaction up to 2.7s
