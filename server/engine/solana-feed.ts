@@ -438,6 +438,13 @@ export class SolanaLiveFeed {
   /** Automatic live launch fallback when PumpPortal WebSocket is down (502) or silent >12s. */
   private async pollPumpFunFallback() {
     if (this.stopped || this.inFlightFallback) return;
+    // Watchdog: terminate & immediately reconnect half-open zombie PumpPortal WS sockets silent >15s.
+    if (this.pumpWs?.readyState === WebSocket.OPEN && this.lastPumpMsgAt > 0 && Date.now() - this.lastPumpMsgAt > 15_000) {
+      console.warn('[solana-feed] PumpPortal WS silent >15s (zombie socket); terminating and reconnecting...');
+      this.pumpRetry = 0;
+      this.lastPumpMsgAt = Date.now();
+      try { this.pumpWs.terminate(); } catch { /* ignore */ }
+    }
     const pumpHealthy = this.pumpWs?.readyState === WebSocket.OPEN && Date.now() - this.lastPumpMsgAt < 12_000;
     if (pumpHealthy) return;
     this.inFlightFallback = true;
@@ -477,7 +484,7 @@ export class SolanaLiveFeed {
         try {
           const rpcCtrl = new AbortController();
           const rpcTimer = setTimeout(() => rpcCtrl.abort(), 2000);
-          const rpcRes = await fetch(this.usePublicSlotFallback ? PUBLIC_SOLANA_HTTP : this.endpoints.httpUrl, {
+          const rpcRes = await fetch(this.endpoints.httpUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             signal: rpcCtrl.signal,
@@ -594,8 +601,8 @@ export class SolanaLiveFeed {
     const withinCurve = !msg.vSolInBondingCurve || msg.vSolInBondingCurve <= cfg.strategy.max_curve_reserve_sol;
     // Selective quality launch filter: 0.5–5.0 SOL dev buy sweet spot + non-empty metadata (name, symbol, uri)
     const hasMeta = Boolean(msg.name?.trim() && msg.symbol?.trim() && (msg.uri?.trim() || ev.image));
-    // Never auto-buy stale REST fallback launches (>2s old) — display them in Live Signals only.
-    const isFreshForAutoBuy = !msg.fromFallback || (typeof msg.createdAtMs === 'number' && ts - msg.createdAtMs <= 10_000);
+    // Allow REST fallback launches up to 20s old (Pump.fun REST caches ~10-15s) during brief WS reconnects.
+    const isFreshForAutoBuy = !msg.fromFallback || (typeof msg.createdAtMs === 'number' && ts - msg.createdAtMs <= 20_000);
     // 15-minute duplicate-symbol cooldown so copycat/vamp clones (e.g., 3x $TOAD) are never bought back-to-back.
     const normSym = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const lastSymBuy = normSym ? (this.recentBoughtSymbols.get(normSym) ?? 0) : 0;
