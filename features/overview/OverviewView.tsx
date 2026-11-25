@@ -70,14 +70,16 @@ export function OverviewView() {
   };
 
   const nowMs = Date.now();
+  const isShadow = state.engine.status === 'SHADOW';
   const rangeIncludesNow = dateRange.end >= nowMs - 60_000;
-  const open = useMemo(
-    () => (rangeIncludesNow ? state.positions : state.positions.filter((p) => p.openedAt >= dateRange.start && p.openedAt <= dateRange.end)),
-    [state.positions, dateRange, rangeIncludesNow],
-  );
+  // Strictly separate Paper Mode analytics (paper_* / cl_paper_*) from Real SOL analytics
+  const open = useMemo(() => {
+    const modePositions = state.positions.filter((p) => (isShadow ? p.id.startsWith('paper_') : !p.id.startsWith('paper_')));
+    return rangeIncludesNow ? modePositions : modePositions.filter((p) => p.openedAt >= dateRange.start && p.openedAt <= dateRange.end);
+  }, [state.positions, isShadow, dateRange, rangeIncludesNow]);
   const closedP = useMemo(
-    () => state.closed.filter((c) => c.closedAt >= dateRange.start && c.closedAt <= dateRange.end),
-    [state.closed, dateRange],
+    () => state.closed.filter((c) => (isShadow ? c.id.startsWith('cl_paper_') : !c.id.startsWith('cl_paper_')) && c.closedAt >= dateRange.start && c.closedAt <= dateRange.end),
+    [state.closed, isShadow, dateRange],
   );
   const signalsP = useMemo(
     () => (frozen ?? state.feed).filter((e) => e.ts >= dateRange.start && e.ts <= dateRange.end),
@@ -88,7 +90,7 @@ export function OverviewView() {
     return s === 'all' ? filtered : filtered.filter((x) => (s === 'kol' ? !!x.kolId : !x.kolId));
   };
 
-  // All KPIs synced to the selected dateRange
+  // All KPIs synced to the selected dateRange & active mode (Paper vs Real SOL)
   const realizedSol = closedP.reduce((a, c) => a + c.proceedsSol - c.entrySol, 0);
   const realizedUsd = closedP.reduce((a, c) => a + (c.proceedsSol - c.entrySol) * (c.solUsd || px), 0);
   const openValue = open.reduce((a, p) => a + p.tokens * p.price, 0);
@@ -96,7 +98,6 @@ export function OverviewView() {
   const unrealSol = open.reduce((a, p) => a + (p.tokens * p.price + (p.proceedsSol ?? 0) - p.entrySol), 0);
   const pnlSol = realizedSol + unrealSol;
   const pnlUsd = realizedUsd + unrealSol * px;
-  const isShadow = state.engine.status === 'SHADOW';
   // Paper equity as of the end of the selected date range (so Yesterday / custom ranges reflect that period's ending balance)
   const paperBalanceAtRangeEndSol = useMemo(() => {
     if (rangeIncludesNow) return computePaperEquitySol(state, paperStartSol);

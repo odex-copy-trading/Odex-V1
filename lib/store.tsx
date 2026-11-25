@@ -248,4 +248,4 @@ export const kolLabel = (s: TerminalState, id: string | null) => (id ? s.kols.fi
 export const portfolioUsd = (s: TerminalState) =>
   (s.balances.sol + s.balances.wsol) * s.balances.solUsd + s.balances.usdc +
   s.inventory.reduce((a, i) => a + i.amount * i.priceUsd, 0) +
-  s.positions.reduce((a, p) => a + p.tokens * p.price, 0) * s.balances.solUsd;
+  s.positions.filter((p) => !p.id.startsWith('paper_')).reduce((a, p) => a + p.tokens * p.price, 0) * s.balances.solUsd;
