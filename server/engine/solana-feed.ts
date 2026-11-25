@@ -49,18 +49,51 @@ function isOnEd25519Curve(buf: Buffer): boolean {
   if (x2 === 0n) return (buf[31] & 0x80) === 0;
   return edPow(x2, (ED25519_P - 1n) >> 1n) === 1n;
 }
+const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+const PUMP_GLOBAL = '4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf';
+const PUMP_FEE_RECIPIENT = '62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV';
+const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+const PUMP_EVENT_AUTH = 'Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1';
+const PUMP_GLOBAL_VOL = 'Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y';
+const PUMP_FEE_CONFIG = '8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt';
+const PUMP_FEE_PROGRAM = 'pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ';
+
+function derivePda(seeds: Buffer[], programId: string): string | null {
+  const progBuf = b58Decode(programId);
+  if (progBuf.length !== 32) return null;
+  const pdaMarker = Buffer.from('ProgramDerivedAddress');
+  for (let bump = 255; bump >= 0; bump--) {
+    const h = crypto.createHash('sha256');
+    for (const s of seeds) h.update(s);
+    h.update(Buffer.from([bump]));
+    h.update(progBuf);
+    h.update(pdaMarker);
+    const d = h.digest();
+    if (!isOnEd25519Curve(d)) return b58Encode(d);
+  }
+  return null;
+}
 function deriveUserVolumeAccumulator(hotWallet: string): string | null {
   if (!hotWallet) return null;
   const userBuf = b58Decode(hotWallet);
-  const progBuf = b58Decode(PUMPFUN_PROGRAM);
-  if (userBuf.length !== 32 || progBuf.length !== 32) return null;
-  const seed = Buffer.from('user_volume_accumulator');
-  const pdaMarker = Buffer.from('ProgramDerivedAddress');
-  for (let bump = 255; bump >= 0; bump--) {
-    const h = crypto.createHash('sha256').update(seed).update(userBuf).update(Buffer.from([bump])).update(progBuf).update(pdaMarker).digest();
-    if (!isOnEd25519Curve(h)) return b58Encode(h);
-  }
-  return null;
+  if (userBuf.length !== 32) return null;
+  return derivePda([Buffer.from('user_volume_accumulator'), userBuf], PUMPFUN_PROGRAM);
+}
+function deriveBondingCurveV2(mint: string): string | null {
+  const mintBuf = b58Decode(mint);
+  if (mintBuf.length !== 32) return null;
+  return derivePda([Buffer.from('bonding-curve-v2'), mintBuf], PUMPFUN_PROGRAM);
+}
+function deriveCreatorVault(creatorBuf: Buffer): string | null {
+  if (creatorBuf.length !== 32) return null;
+  return derivePda([Buffer.from('creator-vault'), creatorBuf], PUMPFUN_PROGRAM);
+}
+function deriveAta(owner: string, tokenProgram: string, mint: string): string | null {
+  const o = b58Decode(owner);
+  const tp = b58Decode(tokenProgram);
+  const m = b58Decode(mint);
+  if (o.length !== 32 || tp.length !== 32 || m.length !== 32) return null;
+  return derivePda([o, tp, m], ATA_PROGRAM);
 }
 
 const ZERO_REVERTS = { duplicate: 0, mutex: 0, kolNotLanded: 0, slippage: 0, expired: 0 };
@@ -709,46 +742,109 @@ export class SolanaLiveFeed {
       }
     };
 
+    const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
+    const userVolPda = deriveUserVolumeAccumulator(hotWallet);
+    const bcV2Pda = deriveBondingCurveV2(p.mint);
+
+    // Fast path (~80-120ms, zero `confirmed` wait!): read mint owner + bonding_curve creator at `processed`
+    // and derive all 17 Pump.fun Buy accounts locally in <1ms for standard coins.
+    const tryFastLocalAccounts = async (): Promise<string[] | null> => {
+      if (!hotWallet || !userVolPda || !bcV2Pda) return null;
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 900);
+      try {
+        const res = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'getMultipleAccounts',
+            params: [[p.mint, p.bondingCurveKey], { encoding: 'base64', commitment: 'processed' }],
+          }),
+        });
+        if (!res.ok) return null;
+        const j = await res.json() as {
+          result?: { value?: Array<{ owner?: string; data?: [string, string] } | null> };
+        };
+        const [mintAcc, curveAcc] = j.result?.value ?? [];
+        const tokenProg = mintAcc?.owner;
+        if (
+          tokenProg !== 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' &&
+          tokenProg !== 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+        ) {
+          return null;
+        }
+        const curveB64 = curveAcc?.data?.[0];
+        if (!curveB64) return null;
+        const curveBuf = Buffer.from(curveB64, 'base64');
+        if (curveBuf.length < 81) return null;
+        // If any mayhem/cashback/buyback tail flag is set, fall back to getTransaction so [17] buyback_fee_recipient is included.
+        if (curveBuf.length > 81 && curveBuf.subarray(81).some((b) => b !== 0)) return null;
+        const creatorVault = deriveCreatorVault(curveBuf.subarray(49, 81));
+        const assocCurve = deriveAta(p.bondingCurveKey, tokenProg, p.mint);
+        if (!creatorVault || !assocCurve) return null;
+        return [
+          PUMP_GLOBAL,
+          PUMP_FEE_RECIPIENT,
+          p.mint,
+          p.bondingCurveKey,
+          assocCurve,
+          hotWallet,
+          hotWallet,
+          SYSTEM_PROGRAM,
+          tokenProg,
+          creatorVault,
+          PUMP_EVENT_AUTH,
+          PUMPFUN_PROGRAM,
+          PUMP_GLOBAL_VOL,
+          userVolPda,
+          PUMP_FEE_CONFIG,
+          PUMP_FEE_PROGRAM,
+          bcV2Pda,
+        ];
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(t);
+      }
+    };
+
     try {
-      // Fast tight retry (0 -> 150 -> 350 -> 600 -> 900 -> 1250ms).
-      // When PumpPortal already gave us msg.signature, skip getSignaturesForAddress completely (saves 400-700ms!).
-      let pumpIxAccounts: string[] | null = null;
-      const waitsMs = [0, 150, 200, 250, 300, 350];
-      for (const wait of waitsMs) {
-        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-        if (p.signature) {
-          pumpIxAccounts = await fetchPumpBuyAccounts(p.signature);
-          if (pumpIxAccounts) break;
-        } else {
-          const sigs = await fetchSigs();
-          for (const sig of sigs.slice(0, 2)) {
-            pumpIxAccounts = await fetchPumpBuyAccounts(sig);
+      // 1. Try instant ~100ms local PDA derivation first (standard Pump.fun coins -> zero confirmed wait!)
+      let dexAccounts = await tryFastLocalAccounts();
+      let fastLocal = dexAccounts !== null;
+
+      // 2. Fallback for Buyback/Cashback/Mayhem coins (or not yet at processed): poll getTransaction up to 2.7s
+      if (!dexAccounts) {
+        let pumpIxAccounts: string[] | null = null;
+        const waitsMs = [0, 200, 300, 400, 500, 600, 700];
+        for (const wait of waitsMs) {
+          if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+          if (p.signature) {
+            pumpIxAccounts = await fetchPumpBuyAccounts(p.signature);
+            if (pumpIxAccounts) break;
+          } else {
+            const sigs = await fetchSigs();
+            for (const sig of sigs.slice(0, 2)) {
+              pumpIxAccounts = await fetchPumpBuyAccounts(sig);
+              if (pumpIxAccounts) break;
+            }
             if (pumpIxAccounts) break;
           }
-          if (pumpIxAccounts) break;
         }
+        if (!pumpIxAccounts) return;
+        dexAccounts = [...pumpIxAccounts];
+        if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
+        if (bcV2Pda && dexAccounts.length >= 17) dexAccounts[16] = bcV2Pda;
       }
-      if (!pumpIxAccounts) return;
 
       const realOpen = this.cp.snapshot().positions.filter((x) => !x.id.startsWith('paper_'));
       if (realOpen.length >= 5 || realOpen.some((x) => x.mint === p.mint)) return;
       if (p.normSym) this.recentBoughtSymbols.set(p.normSym, Date.now());
 
-      // Exact Pump.fun 2026 Buy remaining-accounts guard:
-      // - Standard coins: 17 accounts ([16] = bonding_curve_v2). Strip non-buyback 18th bundler accounts (prevents AnchorError 6074).
-      // - Buyback coins: 18 accounts ([17] = buyback_fee_recipient 3BpXnf...). Keep [17] (prevents AnchorError 6062).
-      const BUYBACK_FEE_RECIPIENT = '3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR';
-      let dexAccounts = [...pumpIxAccounts];
-      if (dexAccounts.length > 17 && dexAccounts[17] !== BUYBACK_FEE_RECIPIENT) {
-        dexAccounts = dexAccounts.slice(0, 17);
-      } else if (dexAccounts.length > 18) {
-        dexAccounts = dexAccounts.slice(0, 18);
-      }
-      const hotWallet = this.cp.configState().config.wallets.hot_wallet_pubkey;
-      const userVolPda = deriveUserVolumeAccumulator(hotWallet);
-      if (userVolPda && dexAccounts.length > 13) dexAccounts[13] = userVolPda;
-
-      console.log(`[solana-feed] Dispatching live Pump.fun buy: $${p.symbol} (${p.buySizeSol} SOL, ${dexAccounts.length} accs, slot ${p.slot})`);
+      console.log(`[solana-feed] Dispatching live Pump.fun buy (${fastLocal ? 'FAST-LOCAL' : 'TX-FALLBACK'}): $${p.symbol} (${p.buySizeSol} SOL, ${dexAccounts.length} accs, slot ${p.slot})`);
       this.cp.dispatchLiveTrigger({
         kind: 'launch',
         venue: p.venue,
