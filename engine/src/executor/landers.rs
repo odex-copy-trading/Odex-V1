@@ -114,13 +114,11 @@ impl LanderFanOut {
         }
     }
 
-    fn resolve_nonce_or_blockhash(&self, idx: usize) -> Option<(PubkeyBytes, [u8; 32])> {
+    fn resolve_nonce_or_blockhash(&self, _idx: usize) -> Option<(PubkeyBytes, [u8; 32])> {
         if let Some(n) = self.nonces.next_ready() {
             return Some((n.pubkey, n.nonce_hash));
         }
-        if idx > 0 {
-            return None;
-        }
+        // Distinct priority_fee_lamports per variant guarantees unique Solana signatures even on shared blockhash.
         let bh = self.recent_blockhash.read().map(|g| *g).unwrap_or([0u8; 32]);
         if bh != [0u8; 32] {
             Some(([0u8; 32], bh))
@@ -232,19 +230,25 @@ impl LanderFanOut {
                 } else {
                     lander.tip_accounts[idx % lander.tip_accounts.len()]
                 };
-                let tip_span = lander.max_tip_lamports.saturating_sub(lander.min_tip_lamports);
-                let tip_step = if lander.fanout > 1 {
-                    (tip_span * idx as u64) / (lander.fanout as u64 - 1)
+                // Two-Tier Slot-0 / Slot-1..4 burst structure:
+                // When fanout >= 2: idx 0 is Tier A (strict Slot +0 ONLY, max_tip_lamports);
+                // idx >= 1 is Tier B (Slot +1..+4 safety net, min_tip_lamports..mid).
+                let is_tier_a = lander.fanout >= 2 && idx == 0;
+                let variant_ttl = if is_tier_a { 0 } else { buy_slot_ttl.clamp(1, 4) };
+                let tip_lamports = if is_tier_a {
+                    lander.max_tip_lamports
+                } else if lander.fanout > 2 {
+                    let span = lander.max_tip_lamports.saturating_sub(lander.min_tip_lamports);
+                    lander.min_tip_lamports.saturating_add((span * (idx - 1) as u64) / (lander.fanout as u64 - 1))
                 } else {
-                    0
+                    lander.min_tip_lamports
                 };
-                let tip_lamports = lander.min_tip_lamports.saturating_add(tip_step);
 
-                // Vary priority fee slightly per variant so signatures are guaranteed distinct.
+                // Vary priority fee slightly per variant (Tier A highest) so signatures are guaranteed distinct.
                 let mut v1_cfg = base_v1_cfg;
                 v1_cfg.priority_fee_lamports = v1_cfg
                     .priority_fee_lamports
-                    .saturating_add((idx as u64) * 1_000);
+                    .saturating_add(if is_tier_a { 5_000 } else { (idx as u64) * 1_000 });
 
                 let is_token_2022_mint = trigger.dex_accounts.contains(&TOKEN_2022_PROGRAM_ID);
                 let use_standalone_guard_for_pumpswap = trigger.venue == Venue::PumpSwap;
@@ -285,7 +289,7 @@ impl LanderFanOut {
                     nonce_hash,
                     tip_account,
                     tip_lamports,
-                    buy_slot_ttl,
+                    buy_slot_ttl: variant_ttl,
                     is_token_2022_mint,
                     use_standalone_guard_for_pumpswap,
                     min_tokens_out,

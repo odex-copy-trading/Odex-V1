@@ -309,10 +309,10 @@ impl TxBuilder {
             });
         } else if trigger.trigger_slot > 0 {
             // Direct-native mode: enforce on-chain Lighthouse AssertSysvarClock (disc=15, op=5 [<=]).
-            // KOL backruns: strict +1 slot cap; 0-block launches: +4..+7 slot cap (default +4).
+            // Respects Two-Tier per-variant TTL: Tier A = +0 (strict Slot 0), Tier B = +1..+4 safety net.
             let ttl = match trigger.kind {
-                TriggerKind::KolBuy { .. } => 1,
-                TriggerKind::ZeroBlockLaunch { .. } => p.buy_slot_ttl.clamp(4, 7),
+                TriggerKind::KolBuy { .. } => p.buy_slot_ttl.min(2),
+                TriggerKind::ZeroBlockLaunch { .. } => p.buy_slot_ttl.min(7),
             };
             let max_slot = trigger.trigger_slot.saturating_add(ttl);
             ixs.push(crate::exits::assert_clock_slot_lte(max_slot));
