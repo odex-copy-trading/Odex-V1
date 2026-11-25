@@ -365,6 +365,36 @@ impl LanderFanOut {
             }
         }
 
+        // Zero-latency-impact post-burst per-lander breakdown so 429 / 400 / tip-too-low errors are never invisible.
+        let mut by_lander: std::collections::BTreeMap<String, (usize, usize, Option<String>)> =
+            std::collections::BTreeMap::new();
+        for r in &results {
+            let e = by_lander.entry(format!("{:?}", r.lander)).or_insert((0, 0, None));
+            if r.accepted {
+                e.0 += 1;
+            } else {
+                e.1 += 1;
+                if e.2.is_none() {
+                    e.2 = r.error.clone();
+                }
+            }
+        }
+        let breakdown: Vec<String> = by_lander
+            .into_iter()
+            .map(|(k, (ok, err, sample))| match sample {
+                Some(s) if err > 0 => format!("{k}={ok}ok/{err}err({s})"),
+                _ => format!("{k}={ok}ok/{err}err"),
+            })
+            .collect();
+        info!(
+            slot,
+            total_sent,
+            accepted,
+            winner = ?winner,
+            landers = %breakdown.join(", "),
+            "Burst fan-out lander breakdown"
+        );
+
         BurstDispatchSummary {
             slot,
             total_sent,
@@ -500,13 +530,23 @@ async fn submit_variant(
                 error: None,
             }
         }
-        Ok(resp) => VariantSubmitResult {
-            lander: v.lander,
-            variant_idx: v.variant_idx,
-            accepted: false,
-            signature: Some(computed_sig),
-            error: Some(format!("HTTP {}", resp.status())),
-        },
+        Ok(resp) => {
+            let status = resp.status();
+            let txt = resp.text().await.unwrap_or_default();
+            let snippet: String = txt.chars().take(120).collect();
+            let err_msg = if snippet.is_empty() {
+                format!("HTTP {status}")
+            } else {
+                format!("HTTP {status}: {snippet}")
+            };
+            VariantSubmitResult {
+                lander: v.lander,
+                variant_idx: v.variant_idx,
+                accepted: false,
+                signature: Some(computed_sig),
+                error: Some(err_msg),
+            }
+        }
         Err(e) => VariantSubmitResult {
             lander: v.lander,
             variant_idx: v.variant_idx,
