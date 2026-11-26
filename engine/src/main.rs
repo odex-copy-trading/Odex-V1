@@ -1079,6 +1079,14 @@ async fn main() {
                         .and_then(|v| v.as_str());
                     let (price_sol, v_sol_lamports) = match b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()) {
                         Some(buf) if buf.len() >= 24 => {
+                            if pos.venue == Venue::PumpFun && buf.len() >= 81 {
+                                if let Ok(live_creator) = <[u8; 32]>::try_from(&buf[49..81]) {
+                                    if live_creator != [0u8; 32] {
+                                        let live_vault = whal_engine::ingest::detector::derive_pumpfun_creator_vault(&live_creator);
+                                        exit_mgr.sync_creator_vault(&pos.mint, live_vault);
+                                    }
+                                }
+                            }
                             let v_tokens = u64::from_le_bytes(buf[8..16].try_into().unwrap_or([0; 8])) as f64 / 1e6;
                             let v_sol = u64::from_le_bytes(buf[16..24].try_into().unwrap_or([0; 8]));
                             let px = if v_tokens > 0.0 { (v_sol as f64 / 1e9) / v_tokens } else { 0.0 };
@@ -1138,9 +1146,13 @@ async fn main() {
                                 Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => whal_engine::ingest::detector::LAUNCHLAB_PROGRAM_ID,
                             };
                             let tok_prog = if pos.is_token_2022 { TOKEN_2022_PROGRAM_ID } else { SPL_TOKEN_PROGRAM_ID };
+                            let live_dex_accs = exit_mgr
+                                .get_position(&pos.mint)
+                                .map(|p| p.dex_accounts)
+                                .unwrap_or_else(|| pos.dex_accounts.clone());
                             let cpi_accounts = build_venue_cpi_accounts(
                                 pos.venue,
-                                &pos.dex_accounts,
+                                &live_dex_accs,
                                 exit_hot,
                                 pos.bot_token_account,
                                 None,

@@ -315,6 +315,19 @@ impl ExitEngine {
         self.positions.get(mint).map(|p| p.clone())
     }
 
+    /// Refreshes a Pump.fun position's `creator_vault` (`dex_accounts[9]`) from the live on-chain
+    /// bonding curve (`buf[49..81]`) so mid-trade Fee-Sharing / CTO creator changes never cause Custom(2006) on sells.
+    pub fn sync_creator_vault(&self, mint: &PubkeyBytes, live_vault: PubkeyBytes) {
+        if live_vault == [0u8; 32] {
+            return;
+        }
+        if let Some(mut entry) = self.positions.get_mut(mint) {
+            if entry.dex_accounts.len() > 9 && entry.dex_accounts[9] != live_vault {
+                entry.dex_accounts[9] = live_vault;
+            }
+        }
+    }
+
     pub fn list_positions(&self) -> Vec<ManagedPosition> {
         self.positions.iter().map(|e| e.value().clone()).collect()
     }

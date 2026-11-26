@@ -88,6 +88,11 @@ fn find_pda(seeds: &[&[u8]], program_id: &PubkeyBytes) -> PubkeyBytes {
     [0u8; 32]
 }
 
+/// Derives Pump.fun's `creator_vault` PDA (`["creator-vault", creator]`) for live sell refreshes.
+pub fn derive_pumpfun_creator_vault(creator: &PubkeyBytes) -> PubkeyBytes {
+    find_pda(&[b"creator-vault", creator], &PUMPFUN_PROGRAM_ID)
+}
+
 /// 0.1ms zero-RPC, zero-ALT 18-account Pump.fun Buy builder for Slot +0 LocalShred execution.
 fn build_local_pumpfun_buy_accounts(
     mint: PubkeyBytes,
