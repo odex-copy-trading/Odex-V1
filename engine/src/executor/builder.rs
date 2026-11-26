@@ -341,6 +341,33 @@ impl TxBuilder {
             };
             let max_slot = trigger.trigger_slot.saturating_add(ttl);
             ixs.push(crate::exits::assert_clock_slot_lte(max_slot));
+            // Shield 2 (Fhbh1D DpBm3e parity at $0 deploy cost via mainnet Lighthouse):
+            // Abort with 0 SOL tip if our tx lands BEFORE the KOL or if the KOL tx reverted.
+            if let TriggerKind::KolBuy {
+                watched_balance_account,
+                is_spl_quote,
+                pre_balance,
+                balance_threshold,
+                ..
+            } = trigger.kind
+            {
+                if balance_threshold > 0 && pre_balance > balance_threshold {
+                    if is_spl_quote {
+                        ixs.push(crate::exits::assert_account_data_u64(
+                            "lighthouse_kol_spl_guard",
+                            watched_balance_account,
+                            crate::exits::SPL_TOKEN_AMOUNT_OFFSET,
+                            crate::exits::OP_LESS_THAN_OR_EQUAL,
+                            balance_threshold,
+                        ));
+                    } else {
+                        ixs.push(crate::exits::assert_account_lamports_lte(
+                            watched_balance_account,
+                            balance_threshold,
+                        ));
+                    }
+                }
+            }
         }
 
         // ix 2: ComputeBudget (always included so priority fee & CU limit are never dropped on wire)

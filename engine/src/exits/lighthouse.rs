@@ -21,6 +21,7 @@ pub const LIGHTHOUSE_ERR_ASSERTION_FAILED: u32 = 6011;
 
 /// Lighthouse instruction discriminators (verified against Jac0xb/lighthouse).
 pub const IX_ASSERT_ACCOUNT_DATA: u8 = 2;
+pub const IX_ASSERT_ACCOUNT_INFO: u8 = 5;
 pub const IX_ASSERT_CLOCK_SYSVAR: u8 = 15;
 
 /// Lighthouse `DataValueAssertion::U64` + `IntegerOperator` tags.
@@ -103,6 +104,32 @@ pub fn assert_pumpfun_liquidity_floor(
         OP_GREATER_THAN,
         min_liquidity_floor_lamports,
     )
+}
+
+/// Pre-buy Shield 2 (KOL balance-drop guard): `AssertAccountInfo(target.lamports <= max_lamports)`.
+/// Aborts in ~500 CU with 0 SOL tip if our tx lands BEFORE the KOL or if the KOL's tx reverts.
+pub fn assert_account_lamports_lte(
+    target_account: PubkeyBytes,
+    max_lamports: u64,
+) -> InstructionSpec {
+    // [ix_disc=5(AssertAccountInfo) | log_level=0(Silent) | AccountInfoAssertion::Lamports=0 | value(u64 LE) | op=5(<=)]
+    let mut data = Vec::with_capacity(12);
+    data.push(IX_ASSERT_ACCOUNT_INFO);
+    data.push(0); // LogLevel::Silent
+    data.push(0); // AccountInfoAssertion::Lamports
+    data.extend_from_slice(&max_lamports.to_le_bytes());
+    data.push(OP_LESS_THAN_OR_EQUAL);
+
+    InstructionSpec {
+        label: "lighthouse_kol_lamports_guard",
+        program_id: LIGHTHOUSE_PROGRAM_ID,
+        accounts: vec![AccountMetaSpec {
+            pubkey: target_account,
+            is_signer: false,
+            is_writable: false,
+        }],
+        data,
+    }
 }
 
 /// Post-sell assertion: `AssertClockSysvar(slot <= current_slot + max_slot_delta)`.

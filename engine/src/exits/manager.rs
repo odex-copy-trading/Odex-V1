@@ -282,7 +282,7 @@ impl ExitEngine {
         } else {
             1.0
         };
-        if pos.instant_tp_fired && mult >= 1.18 && rem_ratio > 0.32 {
+        if pos.entry_price_sol >= 0.50 && pos.instant_tp_fired && mult >= 1.18 && rem_ratio > 0.32 {
             let mut twap = self.twap_state.entry(*mint).or_insert((pos.opened_at_secs, 0));
             let (last_drip, drips) = *twap;
             if drips < 6 && now_secs.saturating_sub(last_drip) >= 2 {
