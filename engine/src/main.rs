@@ -390,8 +390,8 @@ fn apply_kol_upsert(cmd: &Value, watchlist: &WatchlistCache) -> Result<(), Strin
     let enabled = k.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
 
     watchlist.upsert(KolRule {
-        id,
-        label,
+        id: id.clone(),
+        label: label.clone(),
         pubkey,
         quote_token_account: None,
         is_spl_quote: is_spl,
@@ -400,6 +400,16 @@ fn apply_kol_upsert(cmd: &Value, watchlist: &WatchlistCache) -> Result<(), Strin
         max_curve_reserve_lamports: (max_curve * 1_000_000_000.0) as u64,
         enabled,
     });
+    if enabled {
+        info!(
+            kol = %label,
+            pubkey = %pubkey_str,
+            buy_size_sol,
+            max_curve,
+            watched_total = watchlist.watched_accounts().len(),
+            "Synced enabled KOL rule into LocalShred WatchlistCache"
+        );
+    }
     Ok(())
 }
 

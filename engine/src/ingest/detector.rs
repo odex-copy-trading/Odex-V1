@@ -521,6 +521,7 @@ impl SignalDetector {
 
             // Router-wrapped KOL buys (Axiom / Photon / Bloom / Trojan / Jupiter):
             // Scan outer router accounts for contiguous Pump.fun or PumpSwap CPI account slices at 0-block.
+            let before_router = out.len();
             if !found_direct {
                 'router_scan: for ix in &tx.instructions {
                     let accs = &ix.accounts;
@@ -634,6 +635,19 @@ impl SignalDetector {
                         }
                     }
                 }
+                if out.len() == before_router {
+                    let progs: Vec<String> = tx
+                        .instructions
+                        .iter()
+                        .map(|ix| bs58::encode(&ix.program_id).into_string())
+                        .collect();
+                    info!(
+                        slot = tx.slot,
+                        kol = %kol.label,
+                        progs = ?progs,
+                        "LocalShred saw watched KOL tx (not matched by direct/router Pump.fun/PumpSwap)"
+                    );
+                }
             }
         }
 
@@ -729,7 +743,10 @@ impl SignalDetector {
     ) -> bool {
         // Filter 3 (Fhbh1D CreateV2 parity): allow low-to-moderate dev buys (0.20–2.50 SOL),
         // reject heavy dev-bundled traps (> 2.50 SOL), and skip automated 0.99–1.02 SOL farm-bot templates.
-        let effective_min = 200_000_000u64;
+        if launch.is_mayhem {
+            return false;
+        }
+        let effective_min = 500_000_000u64;
         let effective_max = filter.max_dev_buy_lamports.min(2_500_000_000);
         if dev_buy < effective_min || dev_buy > effective_max {
             return false;
