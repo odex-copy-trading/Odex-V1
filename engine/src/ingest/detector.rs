@@ -97,7 +97,15 @@ fn build_local_pumpfun_buy_accounts(
     is_mayhem: bool,
     bundled_buy_accounts: &[PubkeyBytes],
 ) -> Vec<PubkeyBytes> {
+    // Only borrow accounts[1, 4, 8, 9, 16] when the dev buy uses the classic layout
+    // ([2] == mint && [3] == bonding_curve). New 2026 BuyV2/BuyExactQuoteInV2/V3 shift
+    // those indices ([1] == mint, [2] == WSOL), so derive exact PDAs locally instead.
+    let is_classic_layout = bundled_buy_accounts.get(2) == Some(&mint)
+        && bundled_buy_accounts.get(3) == Some(&bonding_curve);
     let pick = |idx: usize, fallback: PubkeyBytes| -> PubkeyBytes {
+        if !is_classic_layout {
+            return fallback;
+        }
         bundled_buy_accounts
             .get(idx)
             .copied()
@@ -199,9 +207,16 @@ fn parse_buy_ix(ix: &DecodedInstruction) -> Option<ParsedBuy> {
             || disc == DISC_PUMPFUN_BUY_V2
             || disc == DISC_PUMPFUN_BUY_V3;
         if is_exact_in || is_amount_max_sol {
-            // Pump.fun buy account layout: [global, fee_recipient, mint(2), bonding_curve(3), ...]
-            let mint = *ix.accounts.get(2)?;
-            let pool_pda = *ix.accounts.get(3)?;
+            // Classic Pump.fun buy: [global(0), fee_recipient(1), mint(2), bonding_curve(3), ...]
+            // New 2026 BuyV2 / BuyExactQuoteInV2/V3: [global(0), mint(1), WSOL(2), token_prog(3), ...]
+            let is_v2_layout = ix.accounts.get(2) == Some(&WSOL_MINT);
+            let (mint, pool_pda) = if is_v2_layout {
+                let m = *ix.accounts.get(1)?;
+                let curve = find_pda(&[b"bonding-curve", &m], &PUMPFUN_PROGRAM_ID);
+                (m, curve)
+            } else {
+                (*ix.accounts.get(2)?, *ix.accounts.get(3)?)
+            };
             let estimated_spend = if is_exact_in {
                 read_u64(&ix.data, 8)?
             } else {
