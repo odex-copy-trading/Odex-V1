@@ -807,7 +807,7 @@ impl SignalDetector {
             return false;
         }
         let effective_min = 500_000_000u64;
-        let effective_max = filter.max_dev_buy_lamports.min(2_500_000_000);
+        let effective_max = filter.max_dev_buy_lamports;
         if dev_buy < effective_min || dev_buy > effective_max {
             return false;
         }
