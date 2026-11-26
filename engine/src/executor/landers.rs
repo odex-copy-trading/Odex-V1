@@ -139,10 +139,10 @@ impl LanderFanOut {
         self.http.clone()
     }
 
-    /// Generates distinct-signature Lighthouse-protected sell variants using Fhbh1D's sell profile:
-    /// - Routes to cheap-tip fast landers (`Astralane`, `Jito`, `Tpu`) at `0.0001 SOL` tip + `0.0001 SOL` priority fee
-    ///   (saving ~0.0011 SOL per sell vs high-minimum buy landers), falling back to all enabled landers if none are on.
-    /// - Caps per-lander sell fanout to 2 (5 fast sell txs total) so exits never waste spray fees.
+    /// Generates distinct-signature Lighthouse-protected instant sell variants across ALL enabled EU landers:
+    /// - Fans out to every enabled lander (`0slot` 2, `Nozomi` 2, `BlockRazor` 2, `Astralane` 2, `Jito` 1 to avoid 429)
+    /// - Uses each lander's verified `max_tip_lamports` (guaranteed above dynamic min tip) + `100k` lamport priority fee
+    ///   so auto-exits, 100% manual sells, and panic exits land in 1 slot (~400ms).
     #[allow(clippy::too_many_arguments)]
     pub fn build_sell_variants(
         &self,
@@ -154,25 +154,19 @@ impl LanderFanOut {
         base_v1_cfg: V1TransactionConfig,
         lookup_tables: &[PubkeyBytes],
     ) -> Vec<VariantDispatch> {
-        const CHEAP_SELL_TIP_LAMPORTS: u64 = 100_000; // 0.0001 SOL (accepted by Astralane & Jito)
-        const SELL_PRIORITY_FEE_FLOOR: u64 = 100_000; // 0.0001 SOL (Fhbh1D sell priority fee)
-
-        let has_cheap_sell_lander = landers.iter().any(|l| {
-            l.enabled
-                && l.fanout > 0
-                && matches!(l.id, LanderId::Astralane | LanderId::Jito | LanderId::Tpu)
-        });
+        const SELL_PRIORITY_FEE_FLOOR: u64 = 100_000; // 0.0001 SOL instant sell priority fee
 
         let mut variants = Vec::new();
         for lander in landers {
             if !lander.enabled || lander.fanout == 0 {
                 continue;
             }
-            let is_cheap_lander = matches!(lander.id, LanderId::Astralane | LanderId::Jito | LanderId::Tpu);
-            if has_cheap_sell_lander && !is_cheap_lander {
-                continue;
-            }
-            let sell_fanout = lander.fanout.min(2);
+            // Jito public endpoint enforces 1 req/s -> cap Jito sells to 1 tx; all other EU landers get 2 txs.
+            let sell_fanout = if lander.id == LanderId::Jito {
+                1
+            } else {
+                lander.fanout.min(2)
+            };
             for idx in 0..sell_fanout {
                 let Some((nonce_pubkey, nonce_hash)) = self.resolve_nonce_or_blockhash(idx) else {
                     break;
@@ -184,10 +178,8 @@ impl LanderFanOut {
                 };
                 let tip_lamports = if lander.id == LanderId::Tpu {
                     0
-                } else if is_cheap_lander {
-                    CHEAP_SELL_TIP_LAMPORTS.max(lander.min_tip_lamports.min(CHEAP_SELL_TIP_LAMPORTS))
                 } else {
-                    lander.min_tip_lamports
+                    lander.max_tip_lamports.max(lander.min_tip_lamports)
                 };
 
                 let mut v1_cfg = base_v1_cfg;
