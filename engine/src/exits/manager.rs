@@ -164,6 +164,17 @@ impl ExitEngine {
             });
         }
 
+        // 1a. Pre-graduation 100% take-profit (~94% Pump.fun curve = 108 vSOL) so winning runners
+        // lock in full profit cleanly before migration locks the bonding curve (Custom: 6005).
+        if pos.venue == Venue::PumpFun && curve_reserve_lamports >= 108_000_000_000 {
+            return Some(ExitOrder {
+                mint: *mint,
+                sell_pct: 100,
+                close_account: true,
+                reason: "Pre-graduation TP (94% curve)",
+            });
+        }
+
         let held_secs = now_secs.saturating_sub(pos.opened_at_secs);
         let mult = if entry_unit_price > 0.0 {
             current_unit_price_sol / entry_unit_price

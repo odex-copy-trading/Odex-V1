@@ -693,6 +693,7 @@ async fn connect_bridge_once(
                                             );
                                             let exec = ctx.executor.clone();
                                             let exits = ctx.exit_engine.clone();
+                                            let shred = ctx.shredstream.clone();
                                             let rpc_url = ctx.rpc_url.clone();
                                             let ata_b58 = bs58::encode(&pos.bot_token_account).into_string();
                                             let mint_log = mint_str.to_string();
@@ -751,6 +752,19 @@ async fn connect_bridge_once(
                                                         max_attempts,
                                                         "Executing forced manual sell (min_quote_out=0)"
                                                     );
+                                                    let live_dex_accs = exits
+                                                        .get_position(&mint_pk)
+                                                        .map(|p| p.dex_accounts)
+                                                        .unwrap_or_else(|| pos.dex_accounts.clone());
+                                                    let live_cpi = build_venue_cpi_accounts(
+                                                        pos.venue,
+                                                        &live_dex_accs,
+                                                        hot_wallet,
+                                                        pos.bot_token_account,
+                                                        None,
+                                                        token_prog,
+                                                    );
+                                                    let live_slot = shred.latest_slot();
                                                     let params = SellTxParams {
                                                         sell_router_program,
                                                         target_dex_program: target_dex,
@@ -763,9 +777,9 @@ async fn connect_bridge_once(
                                                         sell_pct: pct,
                                                         min_quote_out: 0,
                                                         min_liquidity_floor_lamports: 0,
-                                                        current_slot: pos.opened_slot,
+                                                        current_slot: if live_slot > 0 { live_slot } else { pos.opened_slot },
                                                         close_on_full_exit: close_on_full,
-                                                        cpi_accounts: cpi_accounts.clone(),
+                                                        cpi_accounts: if live_cpi.is_empty() { cpi_accounts.clone() } else { live_cpi },
                                                     };
                                                     let _ = exec.execute_sell(params).await;
                                                     if pct >= 100 {

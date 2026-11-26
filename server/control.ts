@@ -376,8 +376,9 @@ export class ControlPlane extends EventEmitter {
     try {
       let buySlot: number | null = isPaper ? knownBuySlot! : null;
       if (buySlot === null) {
-        // 1. Live mode: find earliest confirmed BUY tx for `mint` in our wallet's recent 20 signatures
-        const wsigs = await rpc<Array<{ signature: string; slot: number; err: unknown }>>('getSignaturesForAddress', [wallet, { limit: 20 }]);
+        // 1. Live mode: find earliest confirmed BUY tx for `mint` in our wallet's recent 150 signatures
+        // (21-tx Slot-0 sprays push confirmed buys past limit=20).
+        const wsigs = await rpc<Array<{ signature: string; slot: number; err: unknown }>>('getSignaturesForAddress', [wallet, { limit: 150 }]);
         if (!wsigs?.length) return;
         for (const s of wsigs) {
           if (s.err !== null) continue;
