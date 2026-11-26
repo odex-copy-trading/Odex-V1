@@ -362,9 +362,16 @@ impl TxBuilder {
                             balance_threshold,
                         ));
                     } else {
+                        // On PumpSwap, whales often spend pre-funded WSOL so native SOL only drops by fee/tip (>= 5,000 lamports).
+                        // Checking <= pre_balance - 5_000 still 100% blocks landing ahead of the KOL or on a reverted KOL tx.
+                        let effective_threshold = if trigger.venue == Venue::PumpSwap {
+                            pre_balance.saturating_sub(5_000)
+                        } else {
+                            balance_threshold
+                        };
                         ixs.push(crate::exits::assert_account_lamports_lte(
                             watched_balance_account,
-                            balance_threshold,
+                            effective_threshold,
                         ));
                     }
                 }

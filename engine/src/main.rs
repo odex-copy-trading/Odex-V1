@@ -921,7 +921,7 @@ async fn main() {
                 .timeout(Duration::from_secs(3))
                 .build()
                 .unwrap_or_default();
-            let mut ticker = tokio::time::interval(Duration::from_secs(2));
+            let mut ticker = tokio::time::interval(Duration::from_millis(500));
             loop {
                 ticker.tick().await;
                 let accounts = kol_watchlist.watched_accounts();
