@@ -911,7 +911,8 @@ async fn main() {
     let _keepalive_handle = executor.clone().spawn_keepalive();
     let _exec_handle = executor.clone().spawn(ingest.bus.subscribe());
 
-    // 2s KOL Pre-Slot Balance RPC Refresher (keeps BalanceCache live even on ShredStream-only setups like LocalShred)
+    // 500ms KOL Pre-Slot Balance RPC Refresher + background v0 ALT cache loader for LocalShred
+    whal_engine::ingest::shredstream::spawn_alt_cache_loader(rpc_url.clone());
     {
         let kol_rpc = rpc_url.clone();
         let kol_watchlist = ingest.watchlist.clone();
