@@ -56,7 +56,6 @@ pub const DISC_PUMPSWAP_BUY: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb
 pub const DISC_PUMPSWAP_BUY_EXACT_QUOTE_IN: [u8; 8] = [0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70];
 pub const DISC_LAUNCHLAB_BUY_EXACT_IN: [u8; 8] = [0xfa, 0xea, 0x0d, 0x7b, 0xd5, 0x9c, 0x13, 0xec];
 pub const DISC_LAUNCHLAB_INITIALIZE: [u8; 8] = [0xaf, 0xaf, 0x6d, 0x1f, 0x0d, 0x98, 0x9b, 0xed];
-pub const DISC_PUMPFUN_SELL: [u8; 8] = [0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
 
 // Verified 2026 mainnet Pump.fun static accounts for 0.1ms zero-RPC 18-account LocalShred Buy builder.
 const PUMP_GLOBAL: PubkeyBytes = [0x3a, 0x86, 0x5e, 0x69, 0xee, 0x0f, 0x54, 0x80, 0xca, 0xbc, 0xf6, 0x63, 0x57, 0xe4, 0xdc, 0x2f, 0x18, 0xd5, 0x8d, 0x45, 0xc1, 0xea, 0x74, 0x89, 0xfb, 0x37, 0x23, 0xd9, 0x79, 0x3c, 0x72, 0xa6];
@@ -374,16 +373,6 @@ fn parse_launch_ix(ix: &DecodedInstruction) -> Option<ParsedLaunch> {
     None
 }
 
-#[derive(Debug, Clone)]
-struct MomentumWindow {
-    first_us: u64,
-    buyers: Vec<PubkeyBytes>,
-    slots: Vec<u64>,
-    buy_lamports: u64,
-    sell_count: u16,
-    triggered: bool,
-}
-
 /// High-speed signal detector operating directly on decoded ShredStream transactions.
 pub struct SignalDetector {
     watchlist: WatchlistCache,
@@ -391,7 +380,6 @@ pub struct SignalDetector {
     launch_filter: RwLock<LaunchFilterConfig>,
     recent_symbols: Mutex<HashMap<String, u64>>,
     creator_launches: Mutex<HashMap<PubkeyBytes, Vec<u64>>>,
-    momentum_windows: Mutex<HashMap<PubkeyBytes, MomentumWindow>>,
 }
 
 impl SignalDetector {
@@ -406,87 +394,6 @@ impl SignalDetector {
             launch_filter: RwLock::new(launch_filter),
             recent_symbols: Mutex::new(HashMap::new()),
             creator_launches: Mutex::new(HashMap::new()),
-            momentum_windows: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Mode C (Fhbh1D active-runner momentum scalp):
-    /// Records live Pump.fun buys/sells in a 5s rolling window and fires ONLY on genuine multi-slot organic breakouts:
-    /// - >= 5 unique buyer wallets
-    /// - >= 2 distinct slots (blocks single-slot Jito sybil bundles)
-    /// - >= 4.0 SOL real buy inflow
-    /// - 0 sells during the 5s breakout window
-    fn record_momentum_buy(
-        &self,
-        mint: PubkeyBytes,
-        buyer: PubkeyBytes,
-        slot: u64,
-        spend_lamports: u64,
-        now_us: u64,
-    ) -> Option<(usize, usize, u64)> {
-        const WINDOW_US: u64 = 5_000_000;
-        const MIN_UNIQUE_BUYERS: usize = 5;
-        const MIN_DISTINCT_SLOTS: usize = 2;
-        const MIN_VOLUME_LAMPORTS: u64 = 4_000_000_000; // 4.0 SOL
-        const MAX_SINGLE_BUY_CREDIT: u64 = 2_000_000_000; // cap 1 buyer to 2.0 SOL credit
-
-        let Ok(mut map) = self.momentum_windows.lock() else {
-            return None;
-        };
-        let entry = map.entry(mint).or_insert_with(|| MomentumWindow {
-            first_us: now_us,
-            buyers: Vec::with_capacity(8),
-            slots: Vec::with_capacity(4),
-            buy_lamports: 0,
-            sell_count: 0,
-            triggered: false,
-        });
-        if entry.triggered {
-            return None;
-        }
-        if now_us.saturating_sub(entry.first_us) > WINDOW_US {
-            entry.first_us = now_us;
-            entry.buyers.clear();
-            entry.slots.clear();
-            entry.buy_lamports = 0;
-            entry.sell_count = 0;
-        }
-        if !entry.buyers.contains(&buyer) {
-            entry.buyers.push(buyer);
-        }
-        if !entry.slots.contains(&slot) {
-            entry.slots.push(slot);
-        }
-        // Only credit reasonable buy amounts (ignore 0 or absurd max_sol_cost sentinels)
-        let credited = if spend_lamports >= 50_000_000 && spend_lamports <= 50_000_000_000 {
-            spend_lamports.min(MAX_SINGLE_BUY_CREDIT)
-        } else {
-            250_000_000 // conservative 0.25 SOL credit for max-sentinel buys
-        };
-        entry.buy_lamports = entry.buy_lamports.saturating_add(credited);
-
-        let fired = if entry.sell_count == 0
-            && entry.buyers.len() >= MIN_UNIQUE_BUYERS
-            && entry.slots.len() >= MIN_DISTINCT_SLOTS
-            && entry.buy_lamports >= MIN_VOLUME_LAMPORTS
-        {
-            entry.triggered = true;
-            Some((entry.buyers.len(), entry.slots.len(), entry.buy_lamports))
-        } else {
-            None
-        };
-
-        if map.len() > 2_000 {
-            map.retain(|_, w| w.triggered || now_us.saturating_sub(w.first_us) <= WINDOW_US * 2);
-        }
-        fired
-    }
-
-    fn record_momentum_sell(&self, mint: PubkeyBytes) {
-        if let Ok(mut map) = self.momentum_windows.lock() {
-            if let Some(entry) = map.get_mut(&mint) {
-                entry.sell_count = entry.sell_count.saturating_add(1);
-            }
         }
     }
 
@@ -785,89 +692,6 @@ impl SignalDetector {
                             uri: launch.uri,
                         },
                     });
-                }
-            }
-        }
-
-        // 3. Mode C — 0-Block Organic Momentum Scalp Detector (Fhbh1D active-runner strategy).
-        // Runs on live Pump.fun buys/sells in RAM (<0.05ms, zero RPC) and fires ONLY on multi-slot organic breakouts.
-        if let Some(&signer) = tx.signers.first() {
-            for ix in &tx.instructions {
-                if ix.program_id == PUMPFUN_PROGRAM_ID && ix.data.len() >= 8 {
-                    let disc: [u8; 8] = ix.data[0..8].try_into().unwrap_or([0u8; 8]);
-                    if disc == DISC_PUMPFUN_SELL {
-                        if let Some(&sell_mint) = ix.accounts.get(2) {
-                            self.record_momentum_sell(sell_mint);
-                        }
-                        continue;
-                    }
-                }
-                if let Some(buy) = parse_buy_ix(ix) {
-                    if buy.venue != Venue::PumpFun {
-                        continue;
-                    }
-                    // Require classic 16+ acc Pump.fun buy so we inherit exact on-chain creator_vault & fee_recipient.
-                    let is_classic = buy.ix_accounts.len() >= 16
-                        && buy.ix_accounts.get(2) == Some(&buy.mint)
-                        && buy.ix_accounts.get(3) == Some(&buy.pool_pda);
-                    if !is_classic {
-                        continue;
-                    }
-                    if let Some((n_buyers, n_slots, vol_lamports)) = self.record_momentum_buy(
-                        buy.mint,
-                        signer,
-                        tx.slot,
-                        buy.estimated_spend,
-                        detected_at_us,
-                    ) {
-                        let is_t22 = buy.ix_accounts.get(8) == Some(&crate::executor::TOKEN_2022_PROGRAM_ID);
-                        let is_mayhem = buy.ix_accounts.get(1) == Some(&PUMP_FEE_MAYHEM);
-                        let dex_accounts = if buy.ix_accounts.len() >= 18 {
-                            buy.ix_accounts
-                        } else {
-                            build_local_pumpfun_buy_accounts(
-                                buy.mint,
-                                buy.pool_pda,
-                                signer,
-                                is_t22,
-                                is_mayhem,
-                                &buy.ix_accounts,
-                            )
-                        };
-                        let buy_size = filter.default_buy_lamports.max(50_000_000);
-                        let opportunity_key =
-                            compute_opportunity_key(&buy.mint, tx.slot, StrategyId::KolBackrun);
-                        info!(
-                            slot = tx.slot,
-                            unique_buyers = n_buyers,
-                            distinct_slots = n_slots,
-                            vol_sol = %(vol_lamports as f64 / 1e9),
-                            buy_lamports = buy_size,
-                            "Mode C 0-block organic momentum breakout detected -> firing scalp buy"
-                        );
-                        out.push(TriggerEvent {
-                            opportunity_key,
-                            strategy_id: StrategyId::KolBackrun,
-                            trigger_slot: tx.slot,
-                            detected_at_us,
-                            venue: Venue::PumpFun,
-                            mint: buy.mint,
-                            quote_mint: WSOL_MINT,
-                            pool_pda: buy.pool_pda,
-                            dex_accounts,
-                            kind: TriggerKind::KolBuy {
-                                kol_id: "mode_c_momentum".to_string(),
-                                kol_wallet: signer,
-                                watched_balance_account: signer,
-                                is_spl_quote: false,
-                                pre_balance: 0,
-                                balance_threshold: 0,
-                                estimated_kol_spend: vol_lamports,
-                                buy_size_lamports: buy_size,
-                                max_curve_reserve_lamports: 65_000_000_000,
-                            },
-                        });
-                    }
                 }
             }
         }
