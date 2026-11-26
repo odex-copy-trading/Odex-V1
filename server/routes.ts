@@ -6,6 +6,7 @@ import { ConfigPut, ControlInput, KolInput, KolPatch, NonceInput, SellInput, par
 import type { Db } from './db';
 import type { Env } from './env';
 import { HttpError, type Ctx, type Route } from './http';
+import { buildObserverReport } from './observer';
 import { signJwt, verifyOperatorToken } from './security';
 
 const LoginInput = z.object({ token: z.string().min(16, 'Operator token is too short').max(512) }).strict();
@@ -39,6 +40,7 @@ export function routes(env: Env, db: Db, cp: ControlPlane): Route[] {
 
     // ---------- aggregate ----------
     { method: 'GET', path: '/api/state', auth: true, limit: 'read', handler: () => cp.snapshot() },
+    { method: 'GET', path: '/api/observer/report', auth: true, limit: 'read', handler: () => buildObserverReport(cp, db) },
 
     // ---------- config ----------
     { method: 'GET', path: '/api/config', auth: true, limit: 'read', handler: () => cp.configState() },

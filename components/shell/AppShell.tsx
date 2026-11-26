@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
-import { Activity, Coins, House, Settings, Users, Wallet, WifiOff, X, Zap, type LucideIcon } from '@/components/icons';
+import { Activity, Coins, House, Radar, Settings, Users, Wallet, WifiOff, X, Zap, type LucideIcon } from '@/components/icons';
 import { cx } from '@/components/ui';
 import { BottomBar, EngineRailButton, KillSwitchRailButton, TopBar } from '@/components/shell/StatusBar';
 import { PhantomProvider } from '@/lib/phantom';
@@ -14,6 +14,7 @@ const NAV: { href: string; label: string; short: string; icon: LucideIcon }[] = 
   { href: '/', label: 'Overview', short: 'Home', icon: House },
   { href: '/watchlist', label: 'KOL watchlist', short: 'KOLs', icon: Users },
   { href: '/execution', label: 'Execution & landers', short: 'Landers', icon: Zap },
+  { href: '/observer', label: 'Quant Observer Agent', short: 'Observer', icon: Radar },
   { href: '/treasury', label: 'Treasury & inventory', short: 'Treasury', icon: Coins },
   { href: '/wallets', label: 'Wallets', short: 'Wallets', icon: Wallet },
 ];
