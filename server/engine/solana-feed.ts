@@ -828,6 +828,9 @@ export class SolanaLiveFeed {
         }
         this.openPaperPosition(ev, cfg.strategy.default_buy_sol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, undefined, msg.creator);
       } else if (this.cp.engineStatus === 'RUNNING') {
+        // Strict Slot +0 mode: 100% of live launch snipes must come from Amsterdam LocalShred (0-block).
+        // Skip slow Railway bridge launches (which arrive +2..+4 slots late and only burn base fees on Custom(6001)).
+        if (cfg.strategy.buy_slot_ttl.max === 0) return;
         const curveKey = msg.bondingCurveKey || deriveBondingCurve(msg.mint);
         if (!curveKey) return;
         const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));

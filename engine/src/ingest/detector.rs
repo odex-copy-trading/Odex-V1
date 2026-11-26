@@ -42,8 +42,14 @@ pub const LAUNCHLAB_PROGRAM_ID: PubkeyBytes = [
 
 /// 8-byte Anchor discriminators for buy and launch instructions.
 pub const DISC_PUMPFUN_BUY: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
+pub const DISC_PUMPFUN_BUY_V2: [u8; 8] = [0xb8, 0x17, 0xee, 0x61, 0x67, 0xc5, 0xd3, 0x3d];
+pub const DISC_PUMPFUN_BUY_V3: [u8; 8] = [0x07, 0x05, 0x1d, 0xc4, 0xf5, 0x17, 0x65, 0x50];
 pub const DISC_PUMPFUN_BUY_EXACT_QUOTE_V3: [u8; 8] = [0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70];
+pub const DISC_PUMPFUN_BUY_EXACT_QUOTE_IN_V2: [u8; 8] = [0xc2, 0xab, 0x1c, 0x46, 0x68, 0x4d, 0x5b, 0x2f];
+pub const DISC_PUMPFUN_BUY_EXACT_QUOTE_IN_V3: [u8; 8] = [0xe1, 0xf7, 0x50, 0x1e, 0xd5, 0xb3, 0x84, 0x88];
 pub const DISC_PUMPFUN_BUY_EXACT_SOL_IN: [u8; 8] = [0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f];
+pub const DISC_PUMPFUN_BUY_EXACT_SOL_IN_V2: [u8; 8] = [0x5e, 0x8f, 0xa6, 0x98, 0x98, 0x76, 0x18, 0x2a];
+pub const DISC_PUMPFUN_BUY_EXACT_SOL_IN_V3: [u8; 8] = [0x2a, 0x39, 0xbe, 0xb0, 0x4b, 0x3d, 0x9e, 0x7f];
 pub const DISC_PUMPFUN_CREATE_V2: [u8; 8] = [0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77];
 pub const DISC_PUMPFUN_CREATE_V2_TOKEN2022: [u8; 8] = [0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4];
 pub const DISC_PUMPSWAP_BUY: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
@@ -182,28 +188,35 @@ struct ParsedLaunch {
 
 fn parse_buy_ix(ix: &DecodedInstruction) -> Option<ParsedBuy> {
     let disc: [u8; 8] = ix.data.get(0..8)?.try_into().ok()?;
-    if ix.program_id == PUMPFUN_PROGRAM_ID
-        && (disc == DISC_PUMPFUN_BUY
-            || disc == DISC_PUMPFUN_BUY_EXACT_QUOTE_V3
-            || disc == DISC_PUMPFUN_BUY_EXACT_SOL_IN)
-    {
-        // Pump.fun buy account layout: [global, fee_recipient, mint(2), bonding_curve(3), ...]
-        let mint = *ix.accounts.get(2)?;
-        let pool_pda = *ix.accounts.get(3)?;
-        let estimated_spend = if disc == DISC_PUMPFUN_BUY_EXACT_QUOTE_V3 || disc == DISC_PUMPFUN_BUY_EXACT_SOL_IN {
-            read_u64(&ix.data, 8)?
-        } else {
-            // Legacy buy(amount, max_sol_cost)
-            read_u64(&ix.data, 16)?
-        };
-        return Some(ParsedBuy {
-            venue: Venue::PumpFun,
-            mint,
-            quote_mint: WSOL_MINT,
-            pool_pda,
-            estimated_spend,
-            ix_accounts: ix.accounts.clone(),
-        });
+    if ix.program_id == PUMPFUN_PROGRAM_ID {
+        let is_exact_in = disc == DISC_PUMPFUN_BUY_EXACT_QUOTE_V3
+            || disc == DISC_PUMPFUN_BUY_EXACT_QUOTE_IN_V2
+            || disc == DISC_PUMPFUN_BUY_EXACT_QUOTE_IN_V3
+            || disc == DISC_PUMPFUN_BUY_EXACT_SOL_IN
+            || disc == DISC_PUMPFUN_BUY_EXACT_SOL_IN_V2
+            || disc == DISC_PUMPFUN_BUY_EXACT_SOL_IN_V3;
+        let is_amount_max_sol = disc == DISC_PUMPFUN_BUY
+            || disc == DISC_PUMPFUN_BUY_V2
+            || disc == DISC_PUMPFUN_BUY_V3;
+        if is_exact_in || is_amount_max_sol {
+            // Pump.fun buy account layout: [global, fee_recipient, mint(2), bonding_curve(3), ...]
+            let mint = *ix.accounts.get(2)?;
+            let pool_pda = *ix.accounts.get(3)?;
+            let estimated_spend = if is_exact_in {
+                read_u64(&ix.data, 8)?
+            } else {
+                // buy / buy_v2 / buy_v3(amount, max_sol_cost)
+                read_u64(&ix.data, 16)?
+            };
+            return Some(ParsedBuy {
+                venue: Venue::PumpFun,
+                mint,
+                quote_mint: WSOL_MINT,
+                pool_pda,
+                estimated_spend,
+                ix_accounts: ix.accounts.clone(),
+            });
+        }
     }
 
     if ix.program_id == PUMPSWAP_PROGRAM_ID && disc == DISC_PUMPSWAP_BUY {
