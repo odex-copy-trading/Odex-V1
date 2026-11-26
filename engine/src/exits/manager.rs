@@ -181,7 +181,8 @@ impl ExitEngine {
         } else {
             1.0
         };
-        if mult >= 1.25 {
+        // Arm Breakeven shield at +18% (same tick as Instant TP1) so CreateV2 pops never turn into red -16% SLs.
+        if mult >= 1.18 {
             pos.breakeven_armed = true;
         }
 

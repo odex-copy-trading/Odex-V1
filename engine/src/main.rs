@@ -969,6 +969,8 @@ async fn main() {
         let dump_exits = exit_engine.clone();
         let dump_exec = executor.clone();
         let dump_shred = ingest.shredstream.clone();
+        let dump_detector = ingest.detector.clone();
+        let dump_watchlist = ingest.watchlist.clone();
         let dump_hot = hot_wallet_pubkey;
         let dump_sell_router = env_pubkey("WHAL_SELL_ROUTER_PROGRAM_ID");
         tokio::spawn(async move {
@@ -1003,10 +1005,15 @@ async fn main() {
                     Venue::PumpSwap => dump_exec.programs().pumpswap_program,
                     Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => dump_exec.programs().launchlab_program,
                 };
+                if let Some(cr) = pos.creator {
+                    if dump_watchlist.match_signer(&cr).is_none() {
+                        dump_detector.block_rugged_creator(cr);
+                    }
+                }
                 info!(
                     mint = %bs58::encode(&mint).into_string(),
                     raw_tok_bal = pos.token_balance,
-                    "0-BLOCK DEV-DUMP DETECTED in LocalShred -> firing instant 100% 5-lander exit!"
+                    "0-BLOCK DEV-DUMP / KOL EXIT DETECTED in LocalShred -> firing instant 100% 5-lander exit!"
                 );
                 let exec_clone = dump_exec.clone();
                 let params = whal_engine::exits::SellTxParams {

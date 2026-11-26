@@ -380,6 +380,7 @@ pub struct SignalDetector {
     launch_filter: RwLock<LaunchFilterConfig>,
     recent_symbols: Mutex<HashMap<String, u64>>,
     creator_launches: Mutex<HashMap<PubkeyBytes, Vec<u64>>>,
+    rugged_creators: dashmap::DashSet<PubkeyBytes>,
 }
 
 impl SignalDetector {
@@ -394,6 +395,7 @@ impl SignalDetector {
             launch_filter: RwLock::new(launch_filter),
             recent_symbols: Mutex::new(HashMap::new()),
             creator_launches: Mutex::new(HashMap::new()),
+            rugged_creators: dashmap::DashSet::new(),
         }
     }
 
@@ -438,6 +440,14 @@ impl SignalDetector {
             map.retain(|_, &mut t| now_us.saturating_sub(t) < COOLDOWN_US);
         }
         false
+    }
+
+    /// Permanently blocks a creator pubkey in RAM after a 0-block dev-dump or fail-fast rug.
+    pub fn block_rugged_creator(&self, creator: PubkeyBytes) {
+        if self.rugged_creators.len() > 10_000 {
+            self.rugged_creators.clear();
+        }
+        self.rugged_creators.insert(creator);
     }
 
     pub fn update_launch_filter(&self, next: LaunchFilterConfig) {
@@ -638,8 +648,10 @@ impl SignalDetector {
 
             for ix in &tx.instructions {
                 if let Some(launch) = parse_launch_ix(ix) {
-                    // Track every creator launch (even small dev buys) to block serial deployers (>=2/hr).
-                    if self.is_serial_deployer(launch.creator, detected_at_us) {
+                    // Block known ruggers permanently + serial deployers (>=2/hr).
+                    if self.rugged_creators.contains(&launch.creator)
+                        || self.is_serial_deployer(launch.creator, detected_at_us)
+                    {
                         continue;
                     }
                     if !self.matches_launch_filter(&launch, bundled_dev_buy, &filter) {
@@ -705,9 +717,11 @@ impl SignalDetector {
         dev_buy: u64,
         filter: &LaunchFilterConfig,
     ) -> bool {
-        // Block automated 1.00/1.01 SOL farm-bot template launches + require >= 1.2 SOL conviction dev buy.
-        let effective_min = filter.min_dev_buy_lamports.max(1_200_000_000);
-        if dev_buy < effective_min || dev_buy > filter.max_dev_buy_lamports {
+        // Filter 3 (Fhbh1D CreateV2 parity): allow low-to-moderate dev buys (0.20–2.50 SOL),
+        // reject heavy dev-bundled traps (> 2.50 SOL), and skip automated 0.99–1.02 SOL farm-bot templates.
+        let effective_min = 200_000_000u64;
+        let effective_max = filter.max_dev_buy_lamports.min(2_500_000_000);
+        if dev_buy < effective_min || dev_buy > effective_max {
             return false;
         }
         if (990_000_000..=1_020_000_000).contains(&dev_buy) {
