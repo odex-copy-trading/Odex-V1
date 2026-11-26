@@ -237,8 +237,18 @@ fn parse_buy_ix(ix: &DecodedInstruction) -> Option<ParsedBuy> {
             let estimated_spend = if is_exact_in {
                 read_u64(&ix.data, 8)?
             } else {
-                // buy / buy_v2 / buy_v3(amount, max_sol_cost)
-                read_u64(&ix.data, 16)?
+                // buy / buy_v2 / buy_v3(amount, max_sol_cost): compute exact x*y=k Pump.fun launch SOL cost
+                // from `amount` [8..16] instead of inflated slippage ceiling `max_sol_cost` [16..24].
+                let tok_amt = read_u64(&ix.data, 8)? as u128;
+                let max_sol = read_u64(&ix.data, 16).unwrap_or(u64::MAX);
+                const V_SOL_INIT: u128 = 30_000_000_000;
+                const V_TOK_INIT: u128 = 1_073_000_000_000_000;
+                if tok_amt > 0 && tok_amt < V_TOK_INIT {
+                    let exact_sol = (V_SOL_INIT * tok_amt) / (V_TOK_INIT - tok_amt);
+                    (exact_sol as u64).min(max_sol)
+                } else {
+                    max_sol
+                }
             };
             return Some(ParsedBuy {
                 venue: Venue::PumpFun,

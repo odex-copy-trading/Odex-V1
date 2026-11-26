@@ -1178,7 +1178,7 @@ async fn main() {
                     let ui_price = if price_sol > 0.0 { price_sol } else if init_toks > 0.0 { pos.entry_price_sol / init_toks } else { 0.0 };
                     let sell_cooling_down = last_sell_at
                         .get(&pos.mint)
-                        .map(|&t| now_ms().saturating_sub(t) < 2_500)
+                        .map(|&t| now_ms().saturating_sub(t) < 1_000)
                         .unwrap_or(false);
                     if raw_tok_bal > 0 && price_sol > 0.0 && !sell_cooling_down {
                         if let Some(order) = exit_mgr.on_price_update(&pos.mint, price_sol, ui_tokens, v_sol_lamports, now_secs) {
