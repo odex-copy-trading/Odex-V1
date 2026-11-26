@@ -176,10 +176,12 @@ impl LanderFanOut {
                 } else {
                     lander.tip_accounts[idx % lander.tip_accounts.len()]
                 };
+                // Keep sells cheap at each lander's verified `min_tip_lamports` (0.00105 SOL; Jito 0.0005 SOL)
+                // so bumping `max_tip_sol` (e.g. 0.0035 SOL) for Slot-0 buy priority never overpays on exits.
                 let tip_lamports = if lander.id == LanderId::Tpu {
                     0
                 } else {
-                    lander.max_tip_lamports.max(lander.min_tip_lamports)
+                    lander.min_tip_lamports.max(100_000)
                 };
 
                 let mut v1_cfg = base_v1_cfg;
