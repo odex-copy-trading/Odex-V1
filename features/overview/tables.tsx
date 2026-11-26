@@ -12,7 +12,7 @@ import { LANDER_NAME, NumCell, PctChip, REVERT_META, RTd, RTh, RevertBar, Status
 const at = (s: TerminalState, kolId: string | null) => (
   kolId
     ? <Link href={`/watchlist#${encodeURIComponent(kolId)}`} className="font-medium text-accent hover:underline">@{kolLabel(s, kolId)}</Link>
-    : <span className="text-sky-300">new launch</span>
+    : <span className="text-muted">tracked trader</span>
 );
 const usd = (sol: number, px: number, sign = false) => fmtUsd(sol * px, sign);
 
@@ -133,17 +133,22 @@ const OUTCOME: Record<FeedEvent['outcome'], { label: string; tone: 'neutral' | '
 
 export function SignalsTab({ rows }: { rows: FeedEvent[] }) {
   const { state } = useTerminal();
-  if (!rows.length) return <EmptyState icon={Radar} title="Waiting for shred events">Detections from enabled KOLs and new launches stream here.</EmptyState>;
+  if (!rows.length) return <EmptyState icon={Radar} title="Waiting for copied trader signals">Live buy and sell signals from your tracked traders stream here.</EmptyState>;
   return (
     <table className="w-full">
-      <thead><tr><RTh>Token</RTh><RTh right className="hidden md:table-cell">Size</RTh><RTh right className="hidden lg:table-cell">Fan-out</RTh><RTh className="hidden lg:table-cell">Winner</RTh><RTh className="hidden xl:table-cell">Reverts</RTh><RTh>Outcome</RTh><RTh right className="hidden sm:table-cell">Slot</RTh></tr></thead>
+      <thead><tr><RTh>Token</RTh><RTh>Copied trader</RTh><RTh right className="hidden md:table-cell">Size</RTh><RTh right className="hidden lg:table-cell">Fan-out</RTh><RTh className="hidden lg:table-cell">Winner</RTh><RTh className="hidden xl:table-cell">Reverts</RTh><RTh>Outcome</RTh><RTh right className="hidden sm:table-cell">Slot</RTh></tr></thead>
       <tbody>
         {rows.map((e) => {
           const rev = REVERT_META.reduce((a, m) => a + e.reverts[m.key], 0);
+          const trader = e.kolId ? state.kols.find((k) => k.id === e.kolId) : null;
           return (
             <tr key={e.id} className="flash-in hover:bg-card">
-              <RTd><TokenCell symbol={e.symbol} badge={e.kind === 'sell' ? 'SELL' : e.kind === 'launch' ? 'LAUNCH' : 'KOL BUY'} mint={e.mint} ts={e.ts} image={e.image} sub={<>{VENUE_SHORT[e.venue].toLowerCase()} · {at(state, e.kolId)}</>} /></RTd>
-              <RTd right className="hidden md:table-cell"><NumCell top={`${fmtSol(e.sizeSol, e.kind === 'sell' ? 4 : 2)} SOL`} bottom={e.kind === 'sell' ? 'proceeds' : 'buy size'} /></RTd>
+              <RTd><TokenCell symbol={e.symbol} badge={e.kind === 'sell' ? 'TRADER SELL' : 'COPIED BUY'} mint={e.mint} ts={e.ts} image={e.image} sub={VENUE_SHORT[e.venue].toLowerCase()} /></RTd>
+              <RTd>
+                <div className="text-[0.95rem] font-medium">{at(state, e.kolId)}</div>
+                <div className="text-[0.8rem] text-muted tabular-nums">{trader ? `${trader.pubkey.slice(0, 4)}…${trader.pubkey.slice(-4)}` : e.note ?? '—'}</div>
+              </RTd>
+              <RTd right className="hidden md:table-cell"><NumCell top={`${fmtSol(e.sizeSol, e.kind === 'sell' ? 4 : 2)} SOL`} bottom={e.kind === 'sell' ? 'proceeds' : 'copy size'} /></RTd>
               <RTd right className="hidden lg:table-cell"><NumCell top={e.fanout ? `${e.fanout} tx` : '—'} bottom={e.cuUsed ? `${fmtCompact(e.cuUsed)} CU` : 'not sent'} /></RTd>
               <RTd className="hidden lg:table-cell"><div className="text-[0.95rem]">{e.winner ? <Link href="/execution" className="hover:text-accent hover:underline">{LANDER_NAME[e.winner]}</Link> : <span className="text-muted">—</span>}</div><div className="text-[0.88rem] text-muted">{e.fanout ? `${rev} reverted` : ''}</div></RTd>
               <RTd className="hidden xl:table-cell">{e.fanout && e.kind !== 'sell' ? <div className="w-40"><RevertBar r={e.reverts} total={e.fanout} /><div className="mt-1.5 truncate text-[0.75rem] text-muted tabular-nums">{REVERT_META.filter((m) => e.reverts[m.key]).map((m) => `${m.short} ${e.reverts[m.key]}`).join(' · ') || 'none'}</div></div> : <span className="text-[0.88rem] text-muted">{e.note ?? '—'}</span>}</RTd>

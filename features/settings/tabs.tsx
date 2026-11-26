@@ -131,10 +131,8 @@ export function StrategyTab() {
   const { draft } = useForm();
   return (
     <div className="grid gap-5">
-      <Section title="Modes" desc="Each mode can be switched live.">
+      <Section title="Modes" desc="Copy-trading mode can be switched live.">
         <ToggleField path="strategy.modes.kol_backrun" label="KOL copy-trade backrun" desc="Buy in the same slot after a watched wallet’s buy lands." />
-        <ToggleField path="strategy.modes.pumpfun_create_snipe" label="0-block Pump.fun CreateV2 snipe" desc="Buy in the creation slot of new Pump.fun tokens." />
-        <ToggleField path="strategy.modes.generic_quote_snipe" label="Generic-quote snipe" desc="Pools quoted in BONK, xStocks and other non-SOL mints." />
       </Section>
       <Section title="Buy sizing & guards">
         <NumField path="strategy.default_buy_sol" label="Default buy size" unit="SOL" />
@@ -145,11 +143,6 @@ export function StrategyTab() {
         <NumField path="strategy.default_kol_margin_sol" label="Default KOL balance-drop margin" unit="SOL" hint="Default 0.02 SOL. Per-wallet values on the watchlist override it." />
         <SlotRangeField path="strategy.buy_slot_ttl" label="Buy slot TTL" hint="Reject buys landing after trigger slot + max. Default +0 to +4." />
       </Section>
-      {draft.strategy.modes.generic_quote_snipe && (
-        <Section title="Generic-quote mints">
-          <ListField path="strategy.generic_quote_mints" label="Allowed quote mints" hint="BONK, xStock and other quote-asset mint addresses. One per line." />
-        </Section>
-      )}
     </div>
   );
 }

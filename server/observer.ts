@@ -328,7 +328,7 @@ export function buildObserverReport(cp: ControlPlane, db: Db): ObserverReport {
   findings.sort((a, b) => b.impactScore - a.impactScore);
 
   const lines = [
-    `WHAL BOT LIVE QUANT OBSERVER REPORT (${new Date().toISOString()})`,
+    `ODEX BOT LIVE QUANT OBSERVER REPORT (${new Date().toISOString()})`,
     `Status: ${snap.engine?.status ?? 'UNKNOWN'} | Config v${cfgState.version} | Wallet: ${walletSol.toFixed(4)} SOL | Open: ${(snap.positions ?? []).length}`,
     `Live All (${liveAll.trades}): WR=${liveAll.winRatePct}% | Net=${liveAll.netSol >= 0 ? '+' : ''}${liveAll.netSol} SOL | AvgWin=+${liveAll.avgWinPct}% | AvgLoss=${liveAll.avgLossPct}% | PF=${liveAll.profitFactor}`,
     `Live Last 20 (${liveRecent20.trades}): WR=${liveRecent20.winRatePct}% | Net=${liveRecent20.netSol >= 0 ? '+' : ''}${liveRecent20.netSol} SOL`,

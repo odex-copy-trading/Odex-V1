@@ -1,5 +1,5 @@
-import type { Metadata } from 'next';
-import { ObserverView } from '@/features/observer/ObserverView';
+import { redirect } from 'next/navigation';
 
-export const metadata: Metadata = { title: 'Quant Observer · Whal Bot' };
-export default function Page() { return <ObserverView />; }
+export default function Page() {
+  redirect('/');
+}

@@ -175,10 +175,12 @@ export class MockTerminalServer {
 
   private detect(st: EngineStatus) {
     if (st === 'RUNNING' || st === 'SHADOW') return this.burst(false);
-    const kol = Math.random() < 0.7 ? pick(this.s.kols.filter((k) => k.enabled)) : null;
+    const enabledKols = this.s.kols.filter((k) => k.enabled);
+    if (!enabledKols.length) return;
+    const kol = pick(enabledKols);
     const ev: FeedEvent = {
-      id: uid('ev'), ts: Date.now(), slot: this.s.chain.slot, kind: kol ? 'kol_buy' : 'launch', kolId: kol?.id ?? null,
-      mint: mintFor(), symbol: pick(WORDS), venue: pick(VENUES), sizeSol: kol?.buySizeSol ?? 1.5, fanout: 0, winner: null,
+      id: uid('ev'), ts: Date.now(), slot: this.s.chain.slot, kind: 'kol_buy', kolId: kol.id,
+      mint: mintFor(), symbol: pick(WORDS), venue: pick(VENUES), sizeSol: kol.buySizeSol, fanout: 0, winner: null,
       cuUsed: 0, reverts: zeroReverts(), outcome: 'missed', note: st === 'KILLED' ? 'Kill switch engaged: not sent' : 'Engine paused: not sent',
     };
     this.pushFeed(ev);
@@ -186,7 +188,8 @@ export class MockTerminalServer {
 
   private burst(backfill: boolean) {
     const enabledKols = this.s.kols.filter((k) => k.enabled);
-    const kol = enabledKols.length && Math.random() < 0.72 ? pick(enabledKols) : null;
+    if (!enabledKols.length) return;
+    const kol = pick(enabledKols);
     const shadow = !backfill && this.s.engine.status === 'SHADOW';
     const fanout = rint(kol ? 24 : 12, kol ? 115 : 60);
     const roll = Math.random();

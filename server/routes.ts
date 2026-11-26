@@ -11,6 +11,7 @@ import { signJwt, verifyOperatorToken } from './security';
 
 const LoginInput = z.object({ token: z.string().min(16, 'Operator token is too short').max(512) }).strict();
 const SecretInput = z.object({ value: z.string().min(1).max(16_384) }).strict();
+const WalletBalancesInput = z.object({ addresses: z.array(z.string().min(32).max(64)).max(20) }).strict();
 const actor = (c: Ctx) => ({ actor: c.actor, ip: c.ip });
 
 export function routes(env: Env, db: Db, cp: ControlPlane): Route[] {
@@ -82,8 +83,9 @@ export function routes(env: Env, db: Db, cp: ControlPlane): Route[] {
       return db.listBursts({ limit, cursor, outcome, kolId: c.query.get('kol') ?? undefined, kinds });
     } },
 
-    // ---------- treasury ----------
+    // ---------- treasury & wallets ----------
     { method: 'GET', path: '/api/treasury', auth: true, limit: 'read', handler: () => cp.treasury() },
+    { method: 'POST', path: '/api/wallets/balances', auth: true, limit: 'read', handler: (c) => cp.fetchWalletBalances(parse(WalletBalancesInput, c.body).addresses) },
 
     // ---------- nonces ----------
     { method: 'GET', path: '/api/nonces', auth: true, limit: 'read', handler: () => cp.nonces() },

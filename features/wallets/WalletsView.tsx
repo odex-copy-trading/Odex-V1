@@ -1,15 +1,38 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowUpRight, Copy, Download, Eye, Pencil, Power, Settings, Wallet } from '@/components/icons';
-import { Button, Modal, PageHeader, cx } from '@/components/ui';
+import { ArrowUpRight, Copy, Download, Eye, Lock, Pencil, Plus, Power, Settings, Trash2, TriangleAlert, Wallet, Zap } from '@/components/icons';
+import { Button, Field, Input, Modal, PageHeader, Select, cx } from '@/components/ui';
 import { fmtSol, fmtUsd, shortKey } from '@/lib/format';
 import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
+import { useCustomWallets, type CustomWallet, type WalletAsset } from '@/lib/custom-wallets';
 import { usePhantom } from '@/lib/phantom';
+import { isPubkey } from '@/lib/pubkey';
 import { useTerminal } from '@/lib/store';
+import { generateSolanaKeypair, type GeneratedSolanaWallet } from '@/lib/wallet-gen';
 
 const PAPER_PRESETS = [5, 10, 25, 100];
+const HIDDEN_BUILTINS_KEY = 'odex.hiddenBuiltinWallets.v1';
+
+type BuiltinId = 'phantom' | 'bot' | 'usdc' | 'shadow';
+
+interface WalletDraft {
+  id?: string;
+  title: string;
+  badge: string;
+  asset: WalletAsset;
+  providerLabel: string;
+  address: string;
+}
+
+const BLANK_DRAFT: WalletDraft = {
+  title: '',
+  badge: 'Custom',
+  asset: 'sol',
+  providerLabel: 'Solana Wallet',
+  address: '',
+};
 
 function SolanaMark({ className = 'size-5' }: { className?: string }) {
   return (
@@ -22,7 +45,7 @@ function SolanaMark({ className = 'size-5' }: { className?: string }) {
       </defs>
       <path fill="url(#wallets-sol-grad)" d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7z" />
       <path fill="url(#wallets-sol-grad)" d="M64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8z" />
-      <path fill="url(#wallets-sol-grad)" d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" />
+      <path fill="url(#wallets-sol-grad)" d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l62.7-62.7z" />
     </svg>
   );
 }
@@ -46,7 +69,7 @@ function UsdcMark({ className = 'size-5' }: { className?: string }) {
 function WalletCard({
   title,
   badge,
-  badgeTone = 'amber',
+  badgeTone = 'accent',
   activeHighlight = false,
   asset = 'sol',
   providerLabel,
@@ -58,13 +81,14 @@ function WalletCard({
   primaryAction,
   secondaryAction,
   onReceive,
+  onRemove,
   onCopy,
 }: {
   title: string;
   badge: string;
-  badgeTone?: 'amber' | 'emerald' | 'sky';
+  badgeTone?: 'accent' | 'amber' | 'emerald' | 'sky';
   activeHighlight?: boolean;
-  asset?: 'sol' | 'usdc';
+  asset?: WalletAsset;
   providerLabel: string;
   subtitleNote?: string;
   address: string | null;
@@ -74,6 +98,7 @@ function WalletCard({
   primaryAction: React.ReactNode;
   secondaryAction?: React.ReactNode;
   onReceive?: () => void;
+  onRemove?: () => void;
   onCopy: (addr: string) => void;
 }) {
   const isUsdc = asset === 'usdc';
@@ -81,7 +106,7 @@ function WalletCard({
   return (
     <div className={cx(
       'relative overflow-hidden rounded-[1.35rem] border bg-gradient-to-br from-[#141622] via-[#10111a] to-[#0c0d14] p-6 shadow-xl transition-colors',
-      activeHighlight ? 'border-[#6c75f5]/60 shadow-[0_0_24px_rgba(108,117,245,0.18)]' : 'border-white/[0.08]',
+      activeHighlight ? 'border-accent/60 shadow-[0_0_24px_rgba(139,143,255,0.18)]' : 'border-white/[0.08]',
     )}>
       {/* Subtle large watermark */}
       {isUsdc ? (
@@ -90,7 +115,7 @@ function WalletCard({
         <svg viewBox="0 0 397.7 311.7" aria-hidden className="pointer-events-none absolute right-28 top-1/2 w-40 -translate-y-1/2 opacity-[0.045]">
           <path fill="#14F195" d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7z" />
           <path fill="#00C2FF" d="M64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8z" />
-          <path fill="#9945FF" d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" />
+          <path fill="#9945FF" d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l62.7-62.7z" />
         </svg>
       )}
 
@@ -105,11 +130,13 @@ function WalletCard({
               <h2 className="text-[1.08rem] font-semibold tracking-tight text-white">{title}</h2>
               <span className={cx(
                 'rounded-md border px-2 py-0.5 text-[0.68rem] font-semibold',
-                badgeTone === 'amber'
-                  ? 'border-amber-400/35 bg-amber-400/12 text-amber-300'
-                  : badgeTone === 'sky'
-                    ? 'border-sky-400/35 bg-sky-400/12 text-sky-300'
-                    : 'border-emerald-400/35 bg-emerald-400/12 text-emerald-300',
+                badgeTone === 'accent'
+                  ? 'border-accent/40 bg-accent/15 text-accent'
+                  : badgeTone === 'amber'
+                    ? 'border-amber-400/35 bg-amber-400/12 text-amber-300'
+                    : badgeTone === 'sky'
+                      ? 'border-sky-400/35 bg-sky-400/12 text-sky-300'
+                      : 'border-emerald-400/35 bg-emerald-400/12 text-emerald-300',
               )}>
                 {badge}
               </span>
@@ -137,6 +164,17 @@ function WalletCard({
             {isUsdc ? <UsdcMark className="size-3.5" /> : <SolanaMark className="size-3.5" />}
             {isUsdc ? 'USDC · Solana' : 'Solana'}
           </span>
+          {onRemove && (
+            <button
+              type="button"
+              onClick={onRemove}
+              aria-label={`Remove ${title}`}
+              title={`Remove ${title}`}
+              className="grid size-8 place-items-center rounded-full border border-white/[0.08] bg-black/45 text-muted transition-colors hover:border-rose-400/40 hover:bg-rose-500/15 hover:text-rose-300"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -193,12 +231,160 @@ function WalletCard({
 }
 
 export function WalletsView() {
-  const { state, toast } = useTerminal();
+  const { state, send, toast } = useTerminal();
   const phantom = usePhantom();
   const [paperStartSol, setPaperStartSol] = usePaperBalance();
+  const { wallets: customWallets, setAll: persistCustom, balancesByAddr } = useCustomWallets();
   const [receiveAddr, setReceiveAddr] = useState<{ label: string; addr: string } | null>(null);
   const [paperModal, setPaperModal] = useState(false);
   const [paperInput, setPaperInput] = useState<string>(String(paperStartSol));
+  const [promotingId, setPromotingId] = useState<string | null>(null);
+
+  // Optional hidden built-in cards (persisted in localStorage)
+  const [hiddenBuiltins, setHiddenBuiltins] = useState<BuiltinId[]>([]);
+  const [walletModal, setWalletModal] = useState<WalletDraft | null>(null);
+  const [walletErrors, setWalletErrors] = useState<Partial<Record<keyof WalletDraft, string>>>({});
+  const [confirmRemove, setConfirmRemove] = useState<{ kind: 'custom'; wallet: CustomWallet } | { kind: 'builtin'; id: BuiltinId; label: string } | null>(null);
+
+  // Local Ed25519 wallet generator modal state (secret is kept in RAM only until modal closes)
+  const [genOpen, setGenOpen] = useState(false);
+  const [genTitle, setGenTitle] = useState('');
+  const [genAsset, setGenAsset] = useState<WalletAsset>('sol');
+  const [genBadge, setGenBadge] = useState('Generated');
+  const [genBusy, setGenBusy] = useState(false);
+  const [genResult, setGenResult] = useState<(GeneratedSolanaWallet & { title: string; asset: WalletAsset }) | null>(null);
+  const [revealSecret, setRevealSecret] = useState(false);
+
+  useEffect(() => {
+    try {
+      const hiddenRaw = localStorage.getItem(HIDDEN_BUILTINS_KEY);
+      if (hiddenRaw) {
+        const parsed = JSON.parse(hiddenRaw);
+        if (Array.isArray(parsed)) setHiddenBuiltins(parsed);
+      }
+    } catch { /* ignore corrupted storage */ }
+  }, []);
+
+  const promoteToBotWallet = async (w: CustomWallet) => {
+    if (!state.config) { toast('Config not loaded yet', 'error'); return; }
+    setPromotingId(w.id);
+    try {
+      const next = structuredClone(state.config.config);
+      next.wallets.hot_wallet_pubkey = w.address;
+      await send({ type: 'config.update', baseVersion: state.config.version, config: next });
+      toast(`${w.title} set as Bot Trading Wallet (restart engine to apply)`, 'ok');
+    } catch (e) {
+      toast((e as Error).message || 'Could not update Bot Trading Wallet', 'error');
+    } finally {
+      setPromotingId(null);
+    }
+  };
+
+  const persistHidden = (next: BuiltinId[]) => {
+    setHiddenBuiltins(next);
+    try { localStorage.setItem(HIDDEN_BUILTINS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  };
+
+  const openAddWallet = () => {
+    setWalletErrors({});
+    setWalletModal({ ...BLANK_DRAFT });
+  };
+
+  const openGenerateWallet = () => {
+    setGenTitle(`Wallet #${customWallets.length + 1}`);
+    setGenAsset('sol');
+    setGenBadge('Generated');
+    setGenResult(null);
+    setRevealSecret(false);
+    setGenOpen(true);
+  };
+
+  const closeGenerateWallet = () => {
+    setGenOpen(false);
+    setGenResult(null);
+    setRevealSecret(false);
+  };
+
+  const runGenerateWallet = async () => {
+    setGenBusy(true);
+    try {
+      const kp = await generateSolanaKeypair();
+      const title = genTitle.trim() || `Wallet #${customWallets.length + 1}`;
+      const record: CustomWallet = {
+        id: `w_${Date.now().toString(36)}`,
+        title,
+        badge: genBadge.trim() || 'Generated',
+        asset: genAsset,
+        providerLabel: genAsset === 'usdc' ? 'SPL USDC · Generated' : 'Solana · Generated',
+        address: kp.publicKey,
+      };
+      persistCustom([...customWallets, record]);
+      setGenResult({ ...kp, title, asset: genAsset });
+      toast(`Generated ${title} (${shortKey(kp.publicKey, 4)})`, 'ok');
+    } catch (e) {
+      toast((e as Error).message || 'Failed to generate keypair', 'error');
+    } finally {
+      setGenBusy(false);
+    }
+  };
+
+  const downloadKeypairJson = () => {
+    if (!genResult) return;
+    const slug = genResult.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'wallet';
+    const url = URL.createObjectURL(new Blob([genResult.keypairJson], { type: 'application/json' }));
+    Object.assign(document.createElement('a'), { href: url, download: `odex-${slug}-${genResult.publicKey.slice(0, 6)}.json` }).click();
+    URL.revokeObjectURL(url);
+    toast('Downloaded Solana keypair JSON', 'ok');
+  };
+
+  const openEditWallet = (w: CustomWallet) => {
+    setWalletErrors({});
+    setWalletModal({
+      id: w.id,
+      title: w.title,
+      badge: w.badge,
+      asset: w.asset,
+      providerLabel: w.providerLabel,
+      address: w.address,
+    });
+  };
+
+  const saveCustomWallet = () => {
+    if (!walletModal) return;
+    const errs: Partial<Record<keyof WalletDraft, string>> = {};
+    if (!walletModal.title.trim()) errs.title = 'Enter a wallet name.';
+    if (!isPubkey(walletModal.address)) errs.address = 'Enter a valid Solana public address (base58).';
+    setWalletErrors(errs);
+    if (Object.keys(errs).length) return;
+
+    const record: CustomWallet = {
+      id: walletModal.id ?? `w_${Date.now().toString(36)}`,
+      title: walletModal.title.trim(),
+      badge: walletModal.badge.trim() || 'Custom',
+      asset: walletModal.asset,
+      providerLabel: walletModal.providerLabel.trim() || (walletModal.asset === 'usdc' ? 'SPL USDC · Custom' : 'Solana · Custom'),
+      address: walletModal.address.trim(),
+    };
+
+    const next = walletModal.id
+      ? customWallets.map((w) => (w.id === walletModal.id ? record : w))
+      : [...customWallets, record];
+    persistCustom(next);
+    setWalletModal(null);
+    toast(walletModal.id ? `${record.title} updated` : `${record.title} added`, 'ok');
+  };
+
+  const executeRemove = () => {
+    if (!confirmRemove) return;
+    if (confirmRemove.kind === 'custom') {
+      persistCustom(customWallets.filter((w) => w.id !== confirmRemove.wallet.id));
+      toast(`${confirmRemove.wallet.title} removed`, 'ok');
+    } else {
+      persistHidden([...new Set([...hiddenBuiltins, confirmRemove.id])]);
+      toast(`${confirmRemove.label} hidden`, 'info');
+    }
+    setConfirmRemove(null);
+  };
 
   const savePaperBalance = (val: number) => {
     if (!Number.isFinite(val) || val < 0 || val > 1_000_000) {
@@ -215,7 +401,6 @@ export function WalletsView() {
   const isShadow = state.engine.status === 'SHADOW';
   const hotWallet = state.config?.config.wallets.hot_wallet_pubkey || null;
   const sweepEnabled = state.config?.config.treasury.sweep_enabled ?? false;
-  const paperBuySol = state.config?.config.strategy.default_buy_sol ?? 1;
   const paperOpen = state.positions.filter((p) => p.id.startsWith('paper_'));
   const paperOpenVal = paperOpen.reduce((a, p) => a + p.tokens * p.price, 0);
   const paperEquitySol = computePaperEquitySol(state, paperStartSol);
@@ -225,12 +410,14 @@ export function WalletsView() {
     catch { toast('Copy failed', 'error'); }
   };
 
-  const shadowCard = (
+  const isVisible = (id: BuiltinId) => !hiddenBuiltins.includes(id);
+
+  const shadowCard = isVisible('shadow') ? (
     <WalletCard
       key="shadow"
       title="Paper Wallet"
       badge={isShadow ? '● Active' : 'Standby'}
-      badgeTone={isShadow ? 'emerald' : 'sky'}
+      badgeTone="accent"
       activeHighlight={isShadow}
       providerLabel="Paper Simulator"
       subtitleNote={`paper equity · ${paperOpen.length} open`}
@@ -239,6 +426,7 @@ export function WalletsView() {
       usdc={0}
       solUsd={b.solUsd}
       onCopy={copyAddr}
+      onRemove={() => setConfirmRemove({ kind: 'builtin', id: 'shadow', label: 'Paper Wallet' })}
       secondaryAction={
         <Link
           href="/?tab=positions"
@@ -251,21 +439,21 @@ export function WalletsView() {
         <button
           type="button"
           onClick={() => { setPaperInput(String(paperStartSol)); setPaperModal(true); }}
-          className="inline-flex h-10 items-center gap-2 rounded-full bg-[#6c75f5] px-5 text-sm font-semibold text-white transition-colors hover:bg-[#7c84ff]"
+          className="inline-flex h-10 items-center gap-2 rounded-full bg-accent px-5 text-sm font-semibold text-[#09090d] transition-colors hover:bg-accent/90"
         >
           <Pencil className="size-3.5" aria-hidden />
           Edit Paper Balance
         </button>
       }
     />
-  );
+  ) : null;
 
-  const phantomCard = (
+  const phantomCard = isVisible('phantom') ? (
     <WalletCard
       key="phantom"
       title="Solana Wallet"
       badge="Default"
-      badgeTone="amber"
+      badgeTone="accent"
       providerLabel="Phantom"
       address={phantom.publicKey}
       sol={phantom.solBalance ?? 0}
@@ -273,6 +461,7 @@ export function WalletsView() {
       solUsd={b.solUsd}
       onCopy={copyAddr}
       onReceive={phantom.publicKey ? () => setReceiveAddr({ label: 'Phantom Wallet', addr: phantom.publicKey! }) : undefined}
+      onRemove={() => setConfirmRemove({ kind: 'builtin', id: 'phantom', label: 'Solana Wallet' })}
       secondaryAction={
         phantom.connected ? (
           <button
@@ -290,7 +479,7 @@ export function WalletsView() {
           <button
             type="button"
             onClick={() => { setPaperInput(String(paperStartSol)); setPaperModal(true); }}
-            className="inline-flex h-10 items-center gap-1.5 rounded-full bg-[#6c75f5] px-5 text-sm font-semibold text-white transition-colors hover:bg-[#7c84ff]"
+            className="inline-flex h-10 items-center gap-1.5 rounded-full bg-accent px-5 text-sm font-semibold text-[#09090d] transition-colors hover:bg-accent/90"
           >
             <span aria-hidden>$</span>
             Paper balance
@@ -300,7 +489,7 @@ export function WalletsView() {
             type="button"
             disabled={phantom.connecting}
             onClick={() => void phantom.connect().then((pk) => { if (pk) toast(`Connected Phantom (${shortKey(pk, 4)})`, 'ok'); })}
-            className="inline-flex h-10 items-center gap-2 rounded-full bg-[#6c75f5] px-5 text-sm font-semibold text-white transition-colors hover:bg-[#7c84ff] disabled:opacity-60"
+            className="inline-flex h-10 items-center gap-2 rounded-full bg-accent px-5 text-sm font-semibold text-[#09090d] transition-colors hover:bg-accent/90 disabled:opacity-60"
           >
             <Wallet className="size-4" aria-hidden />
             {phantom.connecting ? 'Connecting…' : 'Connect Phantom'}
@@ -310,21 +499,21 @@ export function WalletsView() {
             href="https://phantom.app/"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex h-10 items-center gap-2 rounded-full bg-[#6c75f5] px-5 text-sm font-semibold text-white transition-colors hover:bg-[#7c84ff]"
+            className="inline-flex h-10 items-center gap-2 rounded-full bg-accent px-5 text-sm font-semibold text-[#09090d] transition-colors hover:bg-accent/90"
           >
             Install Phantom
           </a>
         )
       }
     />
-  );
+  ) : null;
 
-  const botCard = (
+  const botCard = isVisible('bot') ? (
     <WalletCard
       key="bot"
       title="Bot Trading Wallet"
       badge={!isShadow && state.engineSource === 'bridge' ? '● Active' : isShadow ? 'Standby (Paper ON)' : 'Configured'}
-      badgeTone={!isShadow && state.engineSource === 'bridge' ? 'emerald' : 'amber'}
+      badgeTone="accent"
       activeHighlight={!isShadow && state.engineSource === 'bridge'}
       providerLabel="Engine Host"
       address={hotWallet}
@@ -333,6 +522,7 @@ export function WalletsView() {
       solUsd={b.solUsd}
       onCopy={copyAddr}
       onReceive={hotWallet ? () => setReceiveAddr({ label: 'Bot Trading Wallet', addr: hotWallet }) : undefined}
+      onRemove={() => setConfirmRemove({ kind: 'builtin', id: 'bot', label: 'Bot Trading Wallet' })}
       primaryAction={
         <Link
           href="/settings#wallets"
@@ -343,14 +533,14 @@ export function WalletsView() {
         </Link>
       }
     />
-  );
+  ) : null;
 
-  const usdcCard = (
+  const usdcCard = isVisible('usdc') ? (
     <WalletCard
       key="usdc"
       title="USDC Wallet"
       badge={sweepEnabled ? 'Auto-Sweep' : 'Treasury'}
-      badgeTone="sky"
+      badgeTone="accent"
       asset="usdc"
       providerLabel="SPL USDC · Bot Wallet"
       subtitleNote="swept profits · on-chain"
@@ -360,6 +550,7 @@ export function WalletsView() {
       solUsd={b.solUsd}
       onCopy={copyAddr}
       onReceive={hotWallet ? () => setReceiveAddr({ label: 'USDC Wallet (SPL)', addr: hotWallet }) : undefined}
+      onRemove={() => setConfirmRemove({ kind: 'builtin', id: 'usdc', label: 'USDC Wallet' })}
       primaryAction={
         <Link
           href="/treasury"
@@ -370,7 +561,9 @@ export function WalletsView() {
         </Link>
       }
     />
-  );
+  ) : null;
+
+  const paperBuySol = state.config?.config.strategy.default_buy_sol ?? 1;
 
   return (
     <>
@@ -379,7 +572,22 @@ export function WalletsView() {
         sub={
           isShadow
             ? 'Paper Mode is ON — Paper Wallet is active for all simulated trades.'
-            : 'Connected Phantom browser wallet, engine hot trading wallet, and USDC treasury on Solana mainnet.'
+            : 'Manage your Solana and USDC wallets, connected Phantom wallet, and bot trading wallet.'
+        }
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {hiddenBuiltins.length > 0 && (
+              <Button onClick={() => { persistHidden([]); toast('Default wallets restored', 'ok'); }}>
+                Restore defaults ({hiddenBuiltins.length})
+              </Button>
+            )}
+            <Button icon={Zap} onClick={openGenerateWallet}>
+              Generate Wallet
+            </Button>
+            <Button variant="primary" icon={Plus} onClick={openAddWallet}>
+              Add Wallet
+            </Button>
+          </div>
         }
       />
 
@@ -399,10 +607,278 @@ export function WalletsView() {
             {shadowCard}
           </>
         )}
+
+        {customWallets.map((w) => {
+          const isBotWallet = hotWallet === w.address;
+          const live = balancesByAddr[w.address] ?? { sol: 0, usdc: 0 };
+          return (
+            <WalletCard
+              key={w.id}
+              title={w.title}
+              badge={isBotWallet ? 'Bot Wallet' : w.badge}
+              badgeTone="accent"
+              activeHighlight={isBotWallet}
+              asset={w.asset}
+              providerLabel={w.providerLabel}
+              subtitleNote="on-chain"
+              address={w.address}
+              sol={live.sol}
+              usdc={live.usdc}
+              solUsd={b.solUsd}
+              onCopy={copyAddr}
+              onReceive={() => setReceiveAddr({ label: w.title, addr: w.address })}
+              onRemove={() => setConfirmRemove({ kind: 'custom', wallet: w })}
+              secondaryAction={
+                w.asset === 'sol' && !isBotWallet ? (
+                  <button
+                    type="button"
+                    disabled={promotingId === w.id}
+                    onClick={() => void promoteToBotWallet(w)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-3 text-xs font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
+                  >
+                    {promotingId === w.id ? 'Saving…' : 'Use as Bot Wallet'}
+                  </button>
+                ) : null
+              }
+              primaryAction={
+                <button
+                  type="button"
+                  onClick={() => openEditWallet(w)}
+                  className="inline-flex h-10 items-center gap-2 rounded-full bg-accent px-5 text-sm font-semibold text-[#09090d] transition-colors hover:bg-accent/90"
+                >
+                  <Pencil className="size-3.5" aria-hidden />
+                  Customize
+                </button>
+              }
+            />
+          );
+        })}
       </div>
 
+      {/* Generate New Solana Wallet Modal */}
+      <Modal
+        open={genOpen}
+        onClose={closeGenerateWallet}
+        title={genResult ? `Backup ${genResult.title}` : 'Generate New Solana Wallet'}
+      >
+        {!genResult ? (
+          <form
+            className="grid gap-4"
+            onSubmit={(e) => { e.preventDefault(); void runGenerateWallet(); }}
+          >
+            <p className="text-sm text-fg2">
+              Generates a real <b className="text-fg">Ed25519 Solana keypair</b> locally in your browser using Web Crypto. The private key is shown once and never stored or sent to any server.
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Wallet name" htmlFor="gw-title">
+                <Input
+                  id="gw-title"
+                  placeholder="e.g. Trading Wallet #1"
+                  maxLength={32}
+                  value={genTitle}
+                  onChange={(e) => setGenTitle(e.target.value)}
+                />
+              </Field>
+              <Field label="Asset type" htmlFor="gw-asset">
+                <Select
+                  id="gw-asset"
+                  value={genAsset}
+                  onChange={(e) => setGenAsset(e.target.value as WalletAsset)}
+                >
+                  <option value="sol">Solana (SOL)</option>
+                  <option value="usdc">USDC (SPL · Solana)</option>
+                </Select>
+              </Field>
+            </div>
+            <Field label="Badge / Tag" htmlFor="gw-badge">
+              <Input
+                id="gw-badge"
+                placeholder="Generated"
+                maxLength={18}
+                value={genBadge}
+                onChange={(e) => setGenBadge(e.target.value)}
+              />
+            </Field>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button onClick={closeGenerateWallet}>Cancel</Button>
+              <Button type="submit" variant="primary" icon={Zap} loading={genBusy}>
+                Generate Keypair
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <div className="space-y-4 text-sm">
+            <div className="flex items-start gap-2.5 rounded-xl border border-accent/40 bg-accent/10 px-3.5 py-3 text-xs text-fg">
+              <TriangleAlert className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
+              <div>
+                <b className="font-semibold text-accent">Save your private key now.</b> It is never saved to localStorage or sent to the server. Once you close this window, it cannot be recovered.
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs font-medium text-fg2">Public Address ({genResult.asset === 'usdc' ? 'USDC · Solana' : 'Solana'})</div>
+              <div className="mt-1.5 flex items-center justify-between gap-2 rounded-xl border border-line2 bg-card px-3 py-2.5">
+                <code className="num break-all text-xs text-fg">{genResult.publicKey}</code>
+                <Button size="sm" variant="ghost" icon={Copy} onClick={() => void copyAddr(genResult.publicKey)}>Copy</Button>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-fg2">Private Key (Base58 · Phantom / Solflare)</span>
+                <button
+                  type="button"
+                  onClick={() => setRevealSecret((r) => !r)}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline"
+                >
+                  {revealSecret ? <Lock className="size-3" aria-hidden /> : <Eye className="size-3" aria-hidden />}
+                  {revealSecret ? 'Hide' : 'Reveal'}
+                </button>
+              </div>
+              <div className="mt-1.5 flex items-center justify-between gap-2 rounded-xl border border-line2 bg-card px-3 py-2.5">
+                <code className={cx('num break-all text-xs text-fg', !revealSecret && 'select-none blur-xs')}>
+                  {genResult.secretKeyBase58}
+                </code>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={Copy}
+                  onClick={async () => {
+                    try { await navigator.clipboard.writeText(genResult.secretKeyBase58); toast('Private key copied', 'ok'); }
+                    catch { toast('Copy failed', 'error'); }
+                  }}
+                >
+                  Copy
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+              <Button icon={Download} onClick={downloadKeypairJson}>
+                Download keypair.json
+              </Button>
+              <Button variant="primary" onClick={closeGenerateWallet}>
+                I saved my key · Done
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Add / Customize Wallet Modal */}
+      <Modal
+        open={!!walletModal}
+        onClose={() => setWalletModal(null)}
+        title={walletModal?.id ? `Customize ${walletModal.title || 'Wallet'}` : 'Add Wallet'}
+      >
+        {walletModal && (
+          <form
+            className="grid gap-4"
+            onSubmit={(e) => { e.preventDefault(); saveCustomWallet(); }}
+            noValidate
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Wallet name" htmlFor="cw-title" error={walletErrors.title}>
+                <Input
+                  id="cw-title"
+                  placeholder="e.g. USDC Vault or Main SOL"
+                  value={walletModal.title}
+                  maxLength={32}
+                  invalid={!!walletErrors.title}
+                  onChange={(e) => setWalletModal({ ...walletModal, title: e.target.value })}
+                />
+              </Field>
+              <Field label="Asset type" htmlFor="cw-asset">
+                <Select
+                  id="cw-asset"
+                  value={walletModal.asset}
+                  onChange={(e) => {
+                    const nextAsset = e.target.value as WalletAsset;
+                    setWalletModal({
+                      ...walletModal,
+                      asset: nextAsset,
+                      providerLabel: walletModal.providerLabel === 'Solana Wallet' || walletModal.providerLabel === 'SPL USDC Wallet'
+                        ? (nextAsset === 'usdc' ? 'SPL USDC Wallet' : 'Solana Wallet')
+                        : walletModal.providerLabel,
+                    });
+                  }}
+                >
+                  <option value="sol">Solana (SOL)</option>
+                  <option value="usdc">USDC (SPL · Solana)</option>
+                </Select>
+              </Field>
+            </div>
+
+            <Field
+              label="Solana public address"
+              htmlFor="cw-addr"
+              error={walletErrors.address}
+              hint="Public address only. Never paste a private key or seed phrase."
+            >
+              <Input
+                id="cw-addr"
+                className="num"
+                placeholder="Paste base58 public key"
+                autoComplete="off"
+                spellCheck={false}
+                value={walletModal.address}
+                invalid={!!walletErrors.address}
+                onChange={(e) => setWalletModal({ ...walletModal, address: e.target.value })}
+              />
+            </Field>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Badge / Tag" htmlFor="cw-badge">
+                <Input
+                  id="cw-badge"
+                  placeholder="Custom"
+                  maxLength={18}
+                  value={walletModal.badge}
+                  onChange={(e) => setWalletModal({ ...walletModal, badge: e.target.value })}
+                />
+              </Field>
+              <Field label="Provider / Label" htmlFor="cw-provider">
+                <Input
+                  id="cw-provider"
+                  placeholder="Phantom / Vault"
+                  maxLength={28}
+                  value={walletModal.providerLabel}
+                  onChange={(e) => setWalletModal({ ...walletModal, providerLabel: e.target.value })}
+                />
+              </Field>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <Button onClick={() => setWalletModal(null)}>Cancel</Button>
+              <Button type="submit" variant="primary">
+                {walletModal.id ? 'Save changes' : 'Add wallet'}
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      {/* Confirm Remove Modal */}
+      <Modal
+        open={!!confirmRemove}
+        onClose={() => setConfirmRemove(null)}
+        title={`Remove ${confirmRemove?.kind === 'custom' ? confirmRemove.wallet.title : confirmRemove?.label}?`}
+      >
+        <p className="text-sm text-fg2">
+          {confirmRemove?.kind === 'custom'
+            ? 'This removes the custom wallet card from your Wallets list. Your on-chain funds are unaffected.'
+            : 'This hides the default wallet card from your view. You can bring it back anytime using Restore defaults.'}
+        </p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button onClick={() => setConfirmRemove(null)}>Cancel</Button>
+          <Button variant="danger" icon={Trash2} data-autofocus onClick={executeRemove}>
+            Remove
+          </Button>
+        </div>
+      </Modal>
+
       {/* Receive modal */}
-      <Modal open={!!receiveAddr} onClose={() => setReceiveAddr(null)} title={`Receive SOL · ${receiveAddr?.label ?? ''}`}>
+      <Modal open={!!receiveAddr} onClose={() => setReceiveAddr(null)} title={`Receive · ${receiveAddr?.label ?? ''}`}>
         <p className="text-sm text-fg2">Send native Solana (SOL) or SPL tokens to this address:</p>
         <div className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-line2 bg-card px-3 py-2.5">
           <code className="num break-all text-xs text-fg">{receiveAddr?.addr}</code>
@@ -446,7 +922,7 @@ export function WalletsView() {
                   className={cx(
                     'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
                     Number(paperInput) === n
-                      ? 'border-[#6c75f5] bg-[#6c75f5]/20 text-white'
+                      ? 'border-accent bg-accent/20 text-accent'
                       : 'border-line2 bg-card text-fg2 hover:bg-raised hover:text-fg',
                   )}
                 >
@@ -471,7 +947,7 @@ export function WalletsView() {
             </div>
             <div>
               <div className="text-xs text-muted">Session realized PnL</div>
-              <div className={cx('mt-0.5 font-semibold', state.session.realizedSol >= 0 ? 'text-emerald-400' : 'text-rose-400')}>
+              <div className={cx('mt-0.5 font-semibold', state.session.realizedSol >= 0 ? 'text-accent' : 'text-rose-400')}>
                 {fmtSol(state.session.realizedSol, 4, true)} SOL
               </div>
             </div>
@@ -479,7 +955,7 @@ export function WalletsView() {
 
           <div className="flex items-center justify-between gap-2 pt-1">
             <span className="inline-flex items-center gap-1.5 text-xs text-muted">
-              <Eye className="size-3.5 text-sky-400" aria-hidden />
+              <Eye className="size-3.5 text-accent" aria-hidden />
               ≈ {fmtUsd((Number(paperInput) || 0) * b.solUsd)}
             </span>
             <div className="flex gap-2">

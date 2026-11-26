@@ -2,8 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import type { ReactNode } from 'react';
-import { Activity, Coins, House, Radar, Settings, Users, Wallet, WifiOff, X, Zap, type LucideIcon } from '@/components/icons';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Activity, Coins, House, Settings, Users, Wallet, WifiOff, X, Zap, type LucideIcon } from '@/components/icons';
 import { cx } from '@/components/ui';
 import { BottomBar, EngineRailButton, KillSwitchRailButton, TopBar } from '@/components/shell/StatusBar';
 import { PhantomProvider } from '@/lib/phantom';
@@ -14,7 +14,6 @@ const NAV: { href: string; label: string; short: string; icon: LucideIcon }[] = 
   { href: '/', label: 'Overview', short: 'Home', icon: House },
   { href: '/watchlist', label: 'KOL watchlist', short: 'KOLs', icon: Users },
   { href: '/execution', label: 'Execution & landers', short: 'Landers', icon: Zap },
-  { href: '/observer', label: 'Quant Observer Agent', short: 'Observer', icon: Radar },
   { href: '/treasury', label: 'Treasury & inventory', short: 'Treasury', icon: Coins },
   { href: '/wallets', label: 'Wallets', short: 'Wallets', icon: Wallet },
 ];
@@ -25,7 +24,7 @@ function RailLink({ item, active }: { item: typeof SETTINGS; active: boolean }) 
   const Icon = item.icon;
   return (
     <Link href={item.href} aria-label={item.label} aria-current={active ? 'page' : undefined}
-      className={cx('group relative grid size-11 place-items-center rounded-xl text-muted transition-colors hover:bg-raised hover:text-fg', active && 'bg-raised text-fg')}>
+      className={cx('group relative grid size-11 place-items-center rounded-xl text-muted transition-colors hover:bg-raised hover:text-fg', active && 'bg-accent/15 text-accent')}>
       <Icon className="size-5" aria-hidden />
       <span className="pointer-events-none absolute left-13 z-50 whitespace-nowrap rounded-lg border border-line2 bg-raised px-2 py-1 text-xs text-fg opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">{item.label}</span>
     </Link>
@@ -38,7 +37,7 @@ function Rail() {
   return (
     <>
       <nav aria-label="Primary" className="sticky top-0 z-40 hidden h-screen w-16 shrink-0 flex-col items-center gap-2 border-r border-line bg-bg py-3 md:flex">
-        <Link href="/" aria-label="Whal Bot home" className="mb-5 block size-9 overflow-hidden rounded-[0.65rem]">
+        <Link href="/" aria-label="Odex Bot home" className="mb-5 block size-9 overflow-hidden rounded-[0.65rem]">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.png" alt="" className="size-full" />
         </Link>
@@ -56,7 +55,7 @@ function Rail() {
           const Icon = n.icon, a = isActive(n.href);
           return (
             <Link key={n.href} href={n.href} aria-current={a ? 'page' : undefined}
-              className={cx('flex flex-1 flex-col items-center justify-center gap-0.5 text-[0.65rem]', a ? 'text-fg' : 'text-muted')}>
+              className={cx('flex flex-1 flex-col items-center justify-center gap-0.5 text-[0.65rem]', a ? 'text-accent' : 'text-muted')}>
               <Icon className="size-5" aria-hidden />{n.short}
             </Link>
           );
@@ -94,6 +93,9 @@ function Toasts() {
 
 function Gate({ children }: { children: ReactNode }) {
   const { auth } = useTerminal();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
   return auth.required ? <LoginScreen /> : <>{children}</>;
 }
 
@@ -108,7 +110,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="flex min-h-screen min-w-0 flex-1 flex-col pb-15 md:pb-0">
           <TopBar />
           <ConnectionBanner />
-          <main id="main" className="min-w-0 flex-1 px-3 pb-8 pt-6 md:px-7 md:pb-10 xl:px-10">{children}</main>
+          <main id="main" className="flex min-w-0 flex-1 flex-col px-3 pb-5 pt-5 md:px-7 md:pb-6 xl:px-10">{children}</main>
           <BottomBar />
         </div>
       </div>

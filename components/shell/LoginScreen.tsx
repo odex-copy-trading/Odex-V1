@@ -23,7 +23,7 @@ export function LoginScreen() {
       <form onSubmit={(e) => { e.preventDefault(); submit(); }} className="w-full max-w-sm rounded-[1.4rem] border border-line2 bg-panel p-7">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/logo.png" alt="" className="mb-5 size-11 rounded-xl" />
-        <h1 className="text-2xl font-bold tracking-tight">Sign in to Whal Bot</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Sign in to Odex Bot</h1>
         <p className="mt-1.5 text-sm text-fg2">Enter the operator token printed by <code className="num text-[0.8rem] text-fg">npm run server:keys</code>.</p>
         <label htmlFor="op-token" className="mt-6 block text-xs font-medium text-fg2">Operator token</label>
         <input id="op-token" type="password" autoComplete="current-password" spellCheck={false} value={token} onChange={(e) => setToken(e.target.value)} autoFocus

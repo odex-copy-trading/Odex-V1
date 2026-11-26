@@ -2,7 +2,7 @@
   "name": "whal-terminal",
   "version": "0.1.0",
   "private": true,
-  "description": "Whal Bot operator terminal + control plane.",
+  "description": "Odex Bot operator terminal + control plane.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

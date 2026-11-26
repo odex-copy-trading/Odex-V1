@@ -50,7 +50,7 @@ export function Section({ title, desc, children, error, actions }: { title: stri
 
 export function RestartTag({ path }: { path: string }) {
   if (!needsRestart(path)) return null;
-  return <span title="Saved immediately, takes effect after the engine restarts" className="inline-flex items-center gap-1 text-[0.68rem] font-medium uppercase tracking-wide text-muted"><RefreshCw className="size-2.5 text-amber-300/80" aria-hidden />Restart</span>;
+  return <span title="Saved immediately, takes effect after the engine restarts" className="inline-flex items-center gap-1 text-[0.68rem] font-medium uppercase tracking-wide text-accent"><RefreshCw className="size-2.5 text-accent" aria-hidden />Restart</span>;
 }
 
 function Shell({ id, label, path, hint, error, children, wide }: { id: string; label: string; path: string; hint?: ReactNode; error?: string; children: ReactNode; wide?: boolean }) {

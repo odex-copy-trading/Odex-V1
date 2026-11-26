@@ -91,7 +91,7 @@ pub struct LaunchFilterConfig {
 impl Default for LaunchFilterConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             min_dev_buy_lamports: 500_000_000,      // 0.5 SOL (1:1 with Paper Mode)
             max_dev_buy_lamports: 5_000_000_000,    // 5.0 SOL (1:1 with Paper Mode)
             allowed_quote_mints: Vec::new(),

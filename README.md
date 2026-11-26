@@ -1,6 +1,6 @@
-# Whal Bot · Operator terminal
+# Odex Bot · Operator terminal
 
-Frontend for the Whal Bot engine: Next.js (App Router) + TypeScript + Tailwind CSS v4.
+Frontend for the Odex Bot engine: Next.js (App Router) + TypeScript + Tailwind CSS v4.
 The UI talks to the control plane (`server/`) over REST + WebSocket. Until the Rust engine connects over the bridge, the control plane runs a **simulated engine**: nothing signs, sends or reads on-chain data, and the UI labels it SIMULATED ENGINE.
 
 ## Run

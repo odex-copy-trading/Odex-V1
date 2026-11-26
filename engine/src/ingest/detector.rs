@@ -388,6 +388,7 @@ pub struct SignalDetector {
     watchlist: WatchlistCache,
     balances: BalanceCache,
     launch_filter: RwLock<LaunchFilterConfig>,
+    kol_backrun_enabled: std::sync::atomic::AtomicBool,
     recent_symbols: Mutex<HashMap<String, u64>>,
     creator_launches: Mutex<HashMap<PubkeyBytes, Vec<u64>>>,
     rugged_creators: dashmap::DashSet<PubkeyBytes>,
@@ -403,6 +404,7 @@ impl SignalDetector {
             watchlist,
             balances,
             launch_filter: RwLock::new(launch_filter),
+            kol_backrun_enabled: std::sync::atomic::AtomicBool::new(true),
             recent_symbols: Mutex::new(HashMap::new()),
             creator_launches: Mutex::new(HashMap::new()),
             rugged_creators: dashmap::DashSet::new(),
@@ -466,13 +468,25 @@ impl SignalDetector {
         }
     }
 
+    pub fn set_kol_backrun_enabled(&self, enabled: bool) {
+        self.kol_backrun_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Inspects a decoded ShredStream transaction and returns all matching `TriggerEvent`s.
     pub fn inspect_tx(&self, tx: &DecodedTx) -> Vec<TriggerEvent> {
         let mut out = Vec::new();
         let detected_at_us = now_us();
 
         // 1. KOL Buy Detector: check if any tx signer is on the active KOL watchlist.
-        let matched_kol = tx.signers.iter().find_map(|s| self.watchlist.match_signer(s));
+        let matched_kol = if self
+            .kol_backrun_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            tx.signers.iter().find_map(|s| self.watchlist.match_signer(s))
+        } else {
+            None
+        };
         if let Some(kol) = matched_kol {
             let mut found_direct = false;
             for ix in &tx.instructions {
@@ -920,6 +934,8 @@ mod tests {
         let watchlist = WatchlistCache::new();
         let balances = BalanceCache::new();
         let mut filter = LaunchFilterConfig::default();
+        assert!(!filter.enabled, "copy-trading only: launch sniping must be disabled by default");
+        filter.enabled = true;
         filter.min_dev_buy_lamports = 500_000_000;
         filter.blocked_keywords = vec!["rug".into()];
         let detector = SignalDetector::new(watchlist, balances, filter);

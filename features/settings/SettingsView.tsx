@@ -44,7 +44,7 @@ function DiffList({ changes }: { changes: ConfigChange[] }) {
               <li key={c.path} className="grid gap-1 px-3 py-2 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <code className="num text-[0.78rem] text-fg">{c.path.split('.').slice(1).join('.')}</code>
-                  {c.restart ? <span className="rounded-md bg-amber-400/12 px-1.5 py-px text-[0.65rem] font-semibold uppercase text-amber-300">Restart</span>
+                  {c.restart ? <span className="rounded-md bg-accent/15 px-1.5 py-px text-[0.65rem] font-semibold uppercase text-accent">Restart</span>
                     : <span className="rounded-md bg-emerald-400/12 px-1.5 py-px text-[0.65rem] font-semibold uppercase text-emerald-300">Live</span>}
                 </div>
                 <div className="num grid gap-0.5 break-all text-[0.75rem]">
@@ -145,7 +145,7 @@ export function SettingsView() {
 
   const doExport = () => {
     const url = URL.createObjectURL(new Blob([exportConfig(cs.config)], { type: 'application/json' }));
-    Object.assign(document.createElement('a'), { href: url, download: `whal-config-v${cs.version}.json` }).click();
+    Object.assign(document.createElement('a'), { href: url, download: `odex-config-v${cs.version}.json` }).click();
     URL.revokeObjectURL(url);
     toast('Exported saved config (secrets stripped)', 'ok');
   };
@@ -164,7 +164,7 @@ export function SettingsView() {
         <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-[2.25rem] font-bold leading-tight tracking-tight">Settings</h1>
-            <p className="mt-1 text-[0.95rem] text-fg2">Engine config v{cs.version} · saved {fmtAgo(cs.updatedAt)} ago · changes apply live unless marked <span className="text-amber-300">Restart</span></p>
+            <p className="mt-1 text-[0.95rem] text-fg2">Engine config v{cs.version} · saved {fmtAgo(cs.updatedAt)} ago · changes apply live unless marked <span className="font-medium text-accent">Restart</span></p>
           </div>
           <div className="flex flex-wrap gap-2.5">
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) doImport(f); e.target.value = ''; }} />
@@ -174,9 +174,9 @@ export function SettingsView() {
         </div>
 
         {cs.pendingRestart.length > 0 && (
-          <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-400/35 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
-            <RefreshCw className="mt-0.5 size-4 shrink-0" aria-hidden />
-            <div><b className="font-semibold">Restart needed.</b> {cs.pendingRestart.length} saved change{cs.pendingRestart.length > 1 ? 's' : ''} take effect after the engine restarts: <span className="num text-[0.8rem]">{cs.pendingRestart.join(', ')}</span></div>
+          <div className="mb-5 flex items-start gap-3 rounded-xl border border-accent/40 bg-accent/10 px-4 py-3 text-sm text-fg">
+            <RefreshCw className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
+            <div><b className="font-semibold text-accent">Restart needed.</b> {cs.pendingRestart.length} saved change{cs.pendingRestart.length > 1 ? 's' : ''} take effect after the engine restarts: <span className="num text-[0.8rem]">{cs.pendingRestart.join(', ')}</span></div>
           </div>
         )}
         {(stale || conflict) && (
@@ -209,7 +209,7 @@ export function SettingsView() {
         <div className="sticky bottom-[6.25rem] z-20 mx-auto max-w-[96rem] md:bottom-12">
           <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-line2 bg-raised/95 px-4 py-3 shadow-2xl backdrop-blur">
             <span className="text-sm"><b className="font-semibold">{changes.length}</b> unsaved change{changes.length > 1 ? 's' : ''}
-              {restartCount > 0 && <span className="text-amber-300"> · {restartCount} need restart</span>}
+              {restartCount > 0 && <span className="text-accent"> · {restartCount} need restart</span>}
               {totalErrors > 0 && (
                 <button
                   type="button"
@@ -229,7 +229,7 @@ export function SettingsView() {
       )}
 
       <Modal open={review} onClose={() => setReview(false)} title={`Review ${changes.length} change${changes.length > 1 ? 's' : ''}`}>
-        <p className="mb-4 text-sm text-fg2">Saving to config v{cs.version}. <span className="text-emerald-300">Live</span> changes apply on the next detection. <span className="text-amber-300">Restart</span> changes are saved now and apply after an engine restart.</p>
+        <p className="mb-4 text-sm text-fg2">Saving to config v{cs.version}. <span className="text-fg font-medium">Live</span> changes apply on the next detection. <span className="font-medium text-accent">Restart</span> changes are saved now and apply after an engine restart.</p>
         <div className="max-h-[55vh] overflow-auto pr-1"><DiffList changes={changes} /></div>
         <div className="mt-5 flex justify-end gap-2">
           <Button onClick={() => setReview(false)}>Back</Button>

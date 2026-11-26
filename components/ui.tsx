@@ -43,7 +43,7 @@ const toneCls: Record<Tone, string> = {
   ok: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
   bad: 'border-rose-400/30 bg-rose-400/10 text-rose-300',
   warn: 'border-amber-400/35 bg-amber-400/10 text-amber-300',
-  accent: 'border-accent/35 bg-accent/12 text-indigo-200',
+  accent: 'border-accent/40 bg-accent/15 text-accent',
   info: 'border-sky-400/30 bg-sky-400/10 text-sky-300',
 };
 export function Badge({ tone = 'neutral', children, className, mono }: { tone?: Tone; children: ReactNode; className?: string; mono?: boolean }) {
@@ -63,7 +63,7 @@ export function Dot({ tone }: { tone: Tone }) {
 type BtnVariant = 'default' | 'primary' | 'danger' | 'ghost' | 'dangerSolid';
 const btnCls: Record<BtnVariant, string> = {
   default: 'border-line bg-card text-fg hover:bg-raised',
-  primary: 'border-fg bg-fg text-black hover:bg-zinc-300',
+  primary: 'border-accent bg-accent text-[#09090d] font-semibold hover:bg-accent/90',
   danger: 'border-rose-400/35 bg-rose-400/10 text-rose-300 hover:bg-rose-400/20',
   dangerSolid: 'border-rose-500 bg-rose-600 text-white hover:bg-rose-500',
   ghost: 'border-transparent bg-transparent text-fg2 hover:bg-raised hover:text-fg',
@@ -93,7 +93,7 @@ export function Toggle({ checked, onChange, label, disabled }: { checked: boolea
     <button
       type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={clsx('relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-45', checked ? 'bg-emerald-500' : 'bg-line2')}
+      className={clsx('relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-45', checked ? 'bg-accent' : 'bg-line2')}
     >
       <span className={clsx('absolute top-0.5 size-4 rounded-full bg-white transition-[left]', checked ? 'left-[1.15rem]' : 'left-0.5')} />
     </button>

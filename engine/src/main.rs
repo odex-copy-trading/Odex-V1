@@ -357,8 +357,10 @@ fn apply_bridge_exits(cmd: &Value, exits: &ExitEngine) {
 fn apply_bridge_launch_filter(cmd: &Value, detector: &SignalDetector) {
     let cfg = cmd.get("config").unwrap_or(cmd);
     let mut filter = LaunchFilterConfig::default();
-    if let Some(en) = cfg.pointer("/strategy/modes/pumpfun_create_snipe").and_then(|v| v.as_bool()) {
-        filter.enabled = en;
+    // Copy-trading only: 0-block launch sniping is permanently disabled.
+    filter.enabled = false;
+    if let Some(kol_en) = cfg.pointer("/strategy/modes/kol_backrun").and_then(|v| v.as_bool()) {
+        detector.set_kol_backrun_enabled(kol_en);
     }
     if let Some(sol) = cfg.pointer("/strategy/default_buy_sol").and_then(|v| v.as_f64()) {
         filter.default_buy_lamports = (sol.clamp(0.01, 50.0) * 1_000_000_000.0) as u64;

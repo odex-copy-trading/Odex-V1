@@ -69,7 +69,18 @@ export class ControlPlane extends EventEmitter {
       db.insertConfig(1, seed?.config ?? structuredClone(DEFAULT_CONFIG), 'bootstrap', []);
       latest = db.latestConfig()!;
     }
-    this.cfg = { version: latest.version, config: latest.config, updatedAt: latest.createdAt };
+    const normalizedConfig: BotConfig = {
+      ...latest.config,
+      strategy: {
+        ...latest.config.strategy,
+        modes: {
+          ...latest.config.strategy.modes,
+          pumpfun_create_snipe: false,
+          generic_quote_snipe: false,
+        },
+      },
+    };
+    this.cfg = { version: latest.version, config: normalizedConfig, updatedAt: latest.createdAt };
     db.clearPendingRestart();
     if (db.listKols().length === 0) {
       const initialKols = seed?.kols.length ? seed.kols : DEFAULT_KOLS;
@@ -521,7 +532,7 @@ export class ControlPlane extends EventEmitter {
   }
   snapshot(): StateSnapshot {
     const r = this.rt ?? this.emptyRuntime();
-    const feed = this.db.listBursts({ limit: 200, kinds: ['kol_buy', 'launch', 'sell'] }).items.map(({ winningSig: _w, ...f }) => f);
+    const feed = this.db.listBursts({ limit: 200, kinds: ['kol_buy', 'sell'] }).items.map(({ winningSig: _w, ...f }) => f);
     return {
       source: 'live', engineSource: this.engineSource, engine: r.engine, chain: r.chain, balances: r.balances, feed, positions: r.positions,
       closed: this.db.listClosed(5000), kols: this.db.listKols(), landers: this.landersSnapshot(r), sweeps: this.db.listSweeps(60), inventory: r.inventory,
@@ -534,6 +545,8 @@ export class ControlPlane extends EventEmitter {
     if (baseVersion !== this.cfg.version) throw new HttpError(409, `The config changed since you opened it (now v${this.cfg.version}). Reload to get the latest.`, { currentVersion: this.cfg.version });
     const v = validateConfig(input);
     if (!v.ok) throw new HttpError(400, 'Validation failed', { fields: v.errors });
+    v.config.strategy.modes.pumpfun_create_snipe = false;
+    v.config.strategy.modes.generic_quote_snipe = false;
     const changes = diffConfig(this.cfg.config, v.config);
     if (changes.length === 0) return { version: this.cfg.version, appliedLive: [], pendingRestart: this.db.pendingRestart() };
     const version = this.cfg.version + 1;
@@ -688,5 +701,66 @@ export class ControlPlane extends EventEmitter {
     }
     this.db.audit({ ...a, action: `nonce.${input.action}`, target: input.pubkey ?? null, detail: { count: input.count ?? null, result } });
     return result ?? { ok: true };
+  }
+
+  /** Fetches live on-chain SOL and SPL USDC balances for a list of Solana public addresses. */
+  async fetchWalletBalances(addresses: string[]): Promise<{ balances: Record<string, { sol: number; usdc: number }> }> {
+    const unique = [...new Set(addresses.filter((a) => isPubkey(a)))].slice(0, 20);
+    const out: Record<string, { sol: number; usdc: number }> = {};
+    for (const a of unique) out[a] = { sol: 0, usdc: 0 };
+    if (unique.length === 0) return { balances: out };
+
+    let primaryUrl = this.cfg.config.network.rpc_primary_url?.trim() || '';
+    try {
+      const apiKey = this.secrets.reveal('network.rpc_api_key').toString('utf8').trim();
+      if (primaryUrl && apiKey && !primaryUrl.includes('api-key=')) {
+        primaryUrl += (primaryUrl.includes('?') ? '&' : '?') + `api-key=${encodeURIComponent(apiKey)}`;
+      }
+    } catch { /* no secret set */ }
+
+    const urls = [primaryUrl, 'https://api.mainnet-beta.solana.com'].filter((u, i, arr) => u && arr.indexOf(u) === i);
+    const rpcCall = async (method: string, params: unknown[]) => {
+      for (const url of urls) {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 4000);
+        try {
+          const r = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+            signal: ctrl.signal,
+          });
+          if (!r.ok) continue;
+          const j = (await r.json()) as { result?: unknown; error?: unknown };
+          if (j.error || j.result === undefined) continue;
+          return j.result;
+        } catch { /* try fallback */ }
+        finally { clearTimeout(t); }
+      }
+      return null;
+    };
+
+    const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const [multi, ...usdcResults] = await Promise.all([
+      rpcCall('getMultipleAccounts', [unique, { encoding: 'base64', commitment: 'confirmed' }]),
+      ...unique.map((addr) => rpcCall('getTokenAccountsByOwner', [addr, { mint: USDC_MINT }, { encoding: 'jsonParsed', commitment: 'confirmed' }])),
+    ]);
+
+    const vals = (multi as { value?: ({ lamports?: number } | null)[] } | null)?.value;
+    if (Array.isArray(vals)) {
+      vals.forEach((acc, idx) => {
+        const lamports = acc?.lamports ?? 0;
+        out[unique[idx]].sol = +(lamports / 1e9).toFixed(6);
+      });
+    }
+    usdcResults.forEach((res, idx) => {
+      const list = (res as { value?: { account?: { data?: { parsed?: { info?: { tokenAmount?: { uiAmount?: number } } } } } }[] } | null)?.value;
+      if (Array.isArray(list)) {
+        const sum = list.reduce((acc, item) => acc + (item.account?.data?.parsed?.info?.tokenAmount?.uiAmount ?? 0), 0);
+        out[unique[idx]].usdc = +sum.toFixed(4);
+      }
+    });
+
+    return { balances: out };
   }
 }

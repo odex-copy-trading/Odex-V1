@@ -198,7 +198,7 @@ export function ObserverView() {
           <Card>
             <CardHeader
               title="Live vs Paper Quant Comparison"
-              meta="Direct apples-to-apples performance split across Launch & KOL engines"
+              meta="Direct apples-to-apples KOL copy-trading performance"
             />
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">

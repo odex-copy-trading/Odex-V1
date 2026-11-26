@@ -1,4 +1,4 @@
-# Whal Bot control plane
+# Odex Bot control plane
 
 TypeScript on Node's built-in `http` + [`ws`](https://github.com/websockets/ws), SQLite via `node:sqlite`.
 Requires **Node 22.13+** (Node 24 recommended). No native addons.

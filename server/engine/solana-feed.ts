@@ -248,8 +248,8 @@ export class SolanaLiveFeed {
     this.watchdogTimer = setInterval(() => this.checkStaleStreams(), 15_000);
     this.watchdogTimer.unref();
     // Automatic Pump.fun v3 REST fallback (1s) whenever PumpPortal WS is down (e.g., 502) or silent >12s
-    this.pumpFallbackTimer = setInterval(() => void this.pollPumpFunFallback(), 1_000);
-    this.pumpFallbackTimer.unref();
+    // Copy-trading only: new-token launch fallback polling disabled.
+    // Copy-trading only: new-token launch fallback polling disabled.
     this.cp.on('telemetry', (e: { type: string; positions?: Position[]; closed?: ClosedPosition }) => {
       if (e.type === 'config_updated') this.reload();
       if (e.type === 'kols_updated') this.syncKolSubscriptions();
@@ -318,16 +318,7 @@ export class SolanaLiveFeed {
       this.rpcPumpCreateSubId = null;
       console.log(`[solana-feed] Slot stream connected (${this.usePublicSlotFallback ? 'public mainnet-beta' : 'configured RPC'})`);
       ws.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'slotSubscribe', params: [] }));
-      if (!this.usePublicSlotFallback) {
-        const reqId = this.nextRpcSubReqId++;
-        this.rpcPumpCreateReqId = reqId;
-        ws.send(JSON.stringify({
-          jsonrpc: '2.0',
-          id: reqId,
-          method: 'logsSubscribe',
-          params: [{ mentions: [PUMPFUN_PROGRAM] }, { commitment: 'processed' }],
-        }));
-      }
+      // Copy-trading only: Pump.fun global Create/CreateV2 logsSubscribe removed; only slotSubscribe + KOL wallet logsSubscribe run.
       this.syncKolSubscriptions();
     });
 
@@ -436,12 +427,16 @@ export class SolanaLiveFeed {
       this.pumpRetry = 0;
       this.lastPumpMsgAt = Date.now();
       this.pumpSubscribedKols.clear();
-      console.log('[solana-feed] Connected to live mainnet Pump.fun new-token stream');
-      ws.send(JSON.stringify({ method: 'subscribeNewToken' }));
+      console.log('[solana-feed] Connected to live mainnet Pump.fun KOL trade stream');
+      // Copy-trading only: subscribeNewToken disabled; only KOL wallet & open position trades are tracked.
       this.syncKolSubscriptions();
       if (this.paper.size > 0) {
         ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [...this.paper.keys()] }));
       }
+    });
+
+    ws.on('pong', () => {
+      this.lastPumpMsgAt = Date.now();
     });
 
     ws.on('message', (raw) => {
@@ -494,10 +489,12 @@ export class SolanaLiveFeed {
             this.cp.dispatchLiveMirrorSell(msg.mint, 'Dev dump');
             return;
           }
-          if (this.watchedKolKeys.has(msg.traderPublicKey)) {
-            const kol = this.cp.snapshot().kols.find((k) => k.pubkey === msg.traderPublicKey);
-            this.cp.dispatchLiveMirrorSell(msg.mint, kol?.label ?? 'KOL');
-            return;
+          if (livePos.kolId) {
+            const kol = this.cp.snapshot().kols.find((k) => k.id === livePos.kolId && k.pubkey === msg.traderPublicKey);
+            if (kol) {
+              this.cp.dispatchLiveMirrorSell(msg.mint, kol.label);
+              return;
+            }
           }
         }
       }
@@ -747,6 +744,8 @@ export class SolanaLiveFeed {
     },
     ws?: WebSocket,
   ) {
+    // Copy-trading only: ignore new token launch snipe events.
+    if (msg.mint) return;
     if (this.seenMints.has(msg.mint)) return;
     this.seenMints.add(msg.mint);
     if (this.seenMints.size > 400) {
@@ -1564,12 +1563,16 @@ export class SolanaLiveFeed {
   private checkStaleStreams() {
     if (this.stopped) return;
     const now = Date.now();
-    if (this.pumpWs?.readyState === WebSocket.OPEN && this.lastPumpMsgAt > 0 && now - this.lastPumpMsgAt > 30_000) {
-      console.warn('[solana-feed] Pump.fun WS stale >30s; terminating and reconnecting');
-      const old = this.pumpWs;
-      this.pumpWs = null;
-      try { old.terminate(); } catch { /* ignore */ }
-      this.connectPumpStream();
+    if (this.pumpWs?.readyState === WebSocket.OPEN) {
+      if (this.lastPumpMsgAt > 0 && now - this.lastPumpMsgAt > 45_000) {
+        console.warn('[solana-feed] Pump.fun WS ping timeout >45s; terminating and reconnecting');
+        const old = this.pumpWs;
+        this.pumpWs = null;
+        try { old.terminate(); } catch { /* ignore */ }
+        this.connectPumpStream();
+      } else {
+        try { this.pumpWs.ping(); } catch { /* ignore */ }
+      }
     }
     if (this.slotWs?.readyState === WebSocket.OPEN && this.lastSlotMsgAt > 0 && now - this.lastSlotMsgAt > 20_000) {
       console.warn('[solana-feed] Slot WS stale >20s; terminating and reconnecting');

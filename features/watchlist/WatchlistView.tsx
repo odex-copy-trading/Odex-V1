@@ -126,16 +126,16 @@ export function WatchlistView() {
             <Button variant="primary" icon={Plus} onClick={() => setEdit(null)} disabled={loading}>Track wallet</Button>
           </div>
         } />
-      <Card>
-        <CardHeader title="Tracked wallets" meta={<span>Win rate and PnL are from this bot’s own fills on each wallet.</span>}
-          actions={<div className="relative w-64 max-w-full"><Search className="pointer-events-none absolute left-2.5 top-2.5 size-3.5 text-muted" aria-hidden /><Input aria-label="Search wallets" placeholder="Search label or address" className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} /></div>} />
+      <Card className="p-0.5">
+        <CardHeader title={<span className="text-[1.1rem]">Tracked wallets</span>} meta={<span className="text-[0.88rem]">Win rate and PnL are from this bot’s own fills on each wallet.</span>}
+          actions={<div className="relative w-72 max-w-full"><Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted" aria-hidden /><Input aria-label="Search wallets" placeholder="Search label or address" className="h-10 pl-9 text-[0.9rem]" value={q} onChange={(e) => setQ(e.target.value)} /></div>} />
         {loading ? <TableSkeleton rows={6} cols={7} /> : rows.length === 0 ? (
           <EmptyState icon={Users} title={state.kols.length ? 'No wallets match your search' : 'No wallets tracked'} action={!state.kols.length && <Button variant="primary" icon={Plus} onClick={() => setEdit(null)}>Track wallet</Button>}>
             {state.kols.length ? 'Try a different label or address.' : 'Add a KOL wallet to start detecting its buys.'}
           </EmptyState>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[60rem] text-[0.8rem]">
+            <table className="w-full min-w-[66rem] text-[0.9rem] [&_th]:px-5 [&_th]:py-3.5 [&_th]:text-[0.76rem] [&_td]:px-5 [&_td]:py-4">
               <thead><tr><Th>On</Th><Th>Wallet</Th><Th>Quote</Th><Th right>Trigger margin</Th><Th right>Buy size</Th><Th right>Max curve</Th><Th right>Win rate</Th><Th right>Realized PnL</Th><Th right>Last seen</Th><Th right><span className="sr-only">Actions</span></Th></tr></thead>
               <tbody>
                 {rows.map((k) => {
@@ -145,10 +145,10 @@ export function WatchlistView() {
                     <tr key={k.id} id={k.id} className={cx('hover:bg-card', !k.enabled && 'opacity-60', focusId === k.id && 'flash-in bg-accent/10')}>
                       <Td><Toggle checked={k.enabled} label={`${k.enabled ? 'Disable' : 'Enable'} ${k.label}`} onChange={(v) => run({ type: 'kol.toggle', id: k.id, enabled: v }, `${k.label} ${v ? 'enabled' : 'disabled'}`)} /></Td>
                       <Td>
-                        <div className="font-semibold"><Link href={`/?tab=closed&kol=${encodeURIComponent(k.id)}`} className="hover:text-accent hover:underline">{k.label}</Link></div>
-                        <div className="flex items-center gap-1 text-[0.72rem] text-muted">
+                        <div className="text-[0.95rem] font-semibold"><Link href={`/?tab=closed&kol=${encodeURIComponent(k.id)}`} className="hover:text-accent hover:underline">{k.label}</Link></div>
+                        <div className="mt-0.5 flex items-center gap-1 text-[0.8rem] text-muted">
                           <span className="num" title={k.pubkey}>{shortKey(k.pubkey, 5)}</span>
-                          <button type="button" onClick={() => copy(k.pubkey)} aria-label={`Copy ${k.label} address`} className="rounded p-0.5 hover:text-fg"><Copy className="size-3" /></button>
+                          <button type="button" onClick={() => copy(k.pubkey)} aria-label={`Copy ${k.label} address`} className="rounded p-0.5 hover:text-fg"><Copy className="size-3.5" /></button>
                         </div>
                       </Td>
                       <Td><Badge mono>{k.quote}</Badge></Td>
@@ -157,15 +157,15 @@ export function WatchlistView() {
                       <Td right mono>{k.maxCurveReserveSol} <span className="text-muted">SOL</span></Td>
                       <Td right mono>
                         <Link href={`/?tab=closed&kol=${encodeURIComponent(k.id)}`} className="hover:text-accent hover:underline" title={`View ${k.label} trades on Overview`}>
-                          {wr == null ? '—' : `${wr.toFixed(0)}%`} <span className="text-[0.72rem] text-muted">({k.stats.wins}/{n})</span>
+                          {wr == null ? '—' : `${wr.toFixed(0)}%`} <span className="text-[0.8rem] text-muted">({k.stats.wins}/{n})</span>
                         </Link>
                       </Td>
                       <Td right mono className={tone(k.stats.realizedSol)}>{fmtSol(k.stats.realizedSol, 3, true)}</Td>
                       <Td right mono className="text-fg2">{k.stats.lastSeenSlot ? `#${fmtSlot(k.stats.lastSeenSlot)}` : '—'}</Td>
                       <Td right>
-                        <div className="flex justify-end gap-1">
-                          <Link href={`/?tab=closed&kol=${encodeURIComponent(k.id)}`} aria-label={`View ${k.label} trades`} title="View trades" className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-fg2 hover:bg-raised hover:text-fg">
-                            <ArrowUpRight className="size-3.5" />
+                        <div className="flex justify-end gap-1.5">
+                          <Link href={`/?tab=closed&kol=${encodeURIComponent(k.id)}`} aria-label={`View ${k.label} trades`} title="View trades" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-fg2 hover:bg-raised hover:text-fg">
+                            <ArrowUpRight className="size-4" />
                           </Link>
                           <Button size="sm" variant="ghost" icon={Pencil} aria-label={`Edit ${k.label}`} onClick={() => setEdit(toDraft(k))} />
                           <Button size="sm" variant="ghost" icon={Trash2} aria-label={`Remove ${k.label}`} onClick={() => setRemove(k)} className="hover:text-rose-300" />

@@ -161,9 +161,11 @@ function MonthCalendar({
 export function DateRangePicker({
   value,
   onChange,
+  triggerClassName,
 }: {
   value: DateRangeValue;
   onChange: (next: DateRangeValue) => void;
+  triggerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<DateRangeValue>(value);
@@ -213,11 +215,11 @@ export function DateRangePicker({
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className="inline-flex h-9 items-center gap-1.5 rounded-[0.68rem] border border-line bg-card px-3 text-[0.84rem] font-medium hover:bg-raised"
+        className={triggerClassName ?? 'inline-flex h-9 items-center gap-1.5 rounded-[0.68rem] border border-line bg-card px-3 text-[0.84rem] font-medium hover:bg-raised'}
       >
-        <Calendar className="size-3.5 text-fg2" aria-hidden />
+        {!triggerClassName && <Calendar className="size-3.5 text-fg2" aria-hidden />}
         <span>{value.label}</span>
-        <ChevronDown className="size-3 text-muted" aria-hidden />
+        <ChevronDown className={cx('size-3', triggerClassName ? 'opacity-70' : 'text-muted')} aria-hidden />
       </button>
 
       {open && (
@@ -301,11 +303,13 @@ export function PnlCalendarButton({
   positions = [],
   solUsd = 0,
   defaultPaper,
+  triggerClassName,
 }: {
   closed: ClosedPosition[];
   positions?: Position[];
   solUsd?: number;
   defaultPaper: boolean;
+  triggerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<'paper' | 'real'>(defaultPaper ? 'paper' : 'real');
@@ -401,7 +405,7 @@ export function PnlCalendarButton({
       if (v) rows.push([`${ym.y}-${String(ym.m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`, String(v.count), v.sol.toFixed(4), v.usd.toFixed(2)]);
     }
     const url = URL.createObjectURL(new Blob([rows.map((r) => r.join(',')).join('\n')], { type: 'text/csv' }));
-    Object.assign(document.createElement('a'), { href: url, download: `whal-pnl-${ym.y}-${ym.m + 1}-${mode}.csv` }).click();
+    Object.assign(document.createElement('a'), { href: url, download: `odex-pnl-${ym.y}-${ym.m + 1}-${mode}.csv` }).click();
     URL.revokeObjectURL(url);
   };
 
@@ -410,9 +414,9 @@ export function PnlCalendarButton({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex h-9 items-center gap-1.5 rounded-[0.68rem] border border-line bg-card px-3 text-[0.84rem] font-medium hover:bg-raised"
+        className={triggerClassName ?? 'inline-flex h-9 items-center gap-1.5 rounded-[0.68rem] border border-line bg-card px-3 text-[0.84rem] font-medium hover:bg-raised'}
       >
-        <Calendar className="size-3.5 text-fg2" aria-hidden />
+        <Calendar className={cx('size-3.5', triggerClassName ? 'opacity-75' : 'text-fg2')} aria-hidden />
         <span>PnL calendar</span>
       </button>
 
@@ -423,7 +427,7 @@ export function PnlCalendarButton({
             aria-modal="true"
             aria-label="PnL Calendar"
             style={{ fontFamily: 'var(--font-geist), Inter, system-ui, sans-serif' }}
-            className="max-h-[94vh] w-full max-w-[62rem] overflow-auto rounded-2xl border border-white/10 bg-[#0b0c12] p-7 shadow-2xl"
+            className="max-h-[94vh] w-full max-w-[55.8rem] overflow-auto rounded-2xl border border-white/10 bg-[#0b0c12] p-6 shadow-2xl"
           >
             {/* Header */}
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -440,7 +444,7 @@ export function PnlCalendarButton({
                   <button
                     type="button"
                     onClick={() => setMode('real')}
-                    className={cx('rounded-full px-3 py-1 transition-colors', mode === 'real' ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/40' : 'text-muted hover:text-fg')}
+                    className={cx('rounded-full px-3 py-1 transition-colors', mode === 'real' ? 'bg-accent/20 text-accent ring-1 ring-accent/45' : 'text-muted hover:text-fg')}
                   >
                     Real SOL
                   </button>
@@ -506,7 +510,7 @@ export function PnlCalendarButton({
               {['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'].map((d) => <div key={d} className="pb-1.5">{d}</div>)}
             </div>
             <div className="grid grid-cols-7 gap-1">
-              {Array.from({ length: firstDowMon }).map((_, i) => <div key={`pad-${i}`} className="h-[5.75rem]" />)}
+              {Array.from({ length: firstDowMon }).map((_, i) => <div key={`pad-${i}`} className="h-[5.15rem]" />)}
               {Array.from({ length: daysInMonth }).map((_, idx) => {
                 const day = idx + 1;
                 const info = daily.get(day);
@@ -518,7 +522,7 @@ export function PnlCalendarButton({
                     key={day}
                     title={info ? `${info.count} trade${info.count === 1 ? '' : 's'}${isBest ? ' · Best day of month' : ''}` : 'No trades'}
                     className={cx(
-                      'relative flex h-[5.75rem] flex-col rounded-[3px] px-2.5 py-2 transition-colors',
+                      'relative flex h-[5.15rem] flex-col rounded-[3px] px-2.5 py-2 transition-colors',
                       isBest
                         ? 'bg-[#3d3110] ring-1 ring-inset ring-amber-400/75'
                         : val > 0
@@ -557,7 +561,7 @@ export function PnlCalendarButton({
                       ) : null}
                     </div>
                     <div
-                      style={{ fontFamily: 'var(--font-geist), sans-serif', fontSize: '14.85px', fontWeight: 400, fontStyle: 'normal' }}
+                      style={{ fontFamily: 'var(--font-geist), sans-serif', fontSize: '14.11px', fontWeight: 400, fontStyle: 'normal' }}
                       className={cx(
                         'my-auto text-center tracking-tight tabular-nums',
                         isBest

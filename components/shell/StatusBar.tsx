@@ -2,20 +2,21 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { Bell, ChevronDown, Copy, Download, Eye, OctagonX, Pause, Play, Plus, Power, Search, Settings, Users, Wallet, Zap } from '@/components/icons';
+import { Bell, ChevronDown, Copy, Download, Eye, OctagonX, Pause, Play, Plus, Power, Search, Settings, ShieldAlert, Users, Wallet, Zap } from '@/components/icons';
 import { Button, Dot, Modal, Skeleton, cx } from '@/components/ui';
 import { usePhantom } from '@/lib/phantom';
 import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
+import { useCustomWallets } from '@/lib/custom-wallets';
 import { isPubkey } from '@/lib/pubkey';
 import { portfolioUsd, useCommand, useTerminal } from '@/lib/store';
 import { fmtAgo, fmtInt, fmtSlot, fmtSol, fmtUsd, shortKey } from '@/lib/format';
 import type { EngineStatus } from '@/lib/types';
 
-const ENGINE: Record<EngineStatus, { label: string; dot: 'ok' | 'warn' | 'info' | 'bad'; icon: typeof Play; tone: string }> = {
-  RUNNING: { label: 'Running', dot: 'ok', icon: Play, tone: 'text-emerald-300' },
-  PAUSED: { label: 'Paused', dot: 'warn', icon: Pause, tone: 'text-amber-300' },
-  SHADOW: { label: 'Paper Mode', dot: 'info', icon: Eye, tone: 'text-sky-300' },
-  KILLED: { label: 'Killed', dot: 'bad', icon: OctagonX, tone: 'text-rose-300' },
+const ENGINE: Record<EngineStatus, { label: string; dotCls: string; icon: typeof Power; tone: string }> = {
+  RUNNING: { label: 'Running', dotCls: 'bg-accent', icon: Zap, tone: 'text-accent border-accent/35 bg-accent/12' },
+  PAUSED: { label: 'Paused', dotCls: 'bg-amber-400', icon: Power, tone: 'text-accent border-line2 bg-raised' },
+  SHADOW: { label: 'Paper Mode', dotCls: 'bg-accent', icon: Eye, tone: 'text-accent border-accent/35 bg-accent/12' },
+  KILLED: { label: 'Killed', dotCls: 'bg-rose-400', icon: Power, tone: 'text-rose-300 border-rose-400/35 bg-rose-500/12' },
 };
 
 function SolanaLogo() {
@@ -66,10 +67,10 @@ export function EngineRailButton() {
         aria-label={`Engine: ${e.label}`}
         disabled={busy || state.connection !== 'open' || !engineOnline}
         onClick={() => (st === 'KILLED' ? setRearm(true) : setOpen((o) => !o))}
-        className={cx('glass-pill group relative grid size-11 place-items-center rounded-xl disabled:cursor-not-allowed disabled:opacity-50', e.tone)}
+        className={cx('group relative flex size-11 items-center justify-center rounded-xl border transition-colors hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50', e.tone)}
       >
-        <Icon className="size-[1.15rem]" aria-hidden />
-        <span className="absolute right-2 top-2"><Dot tone={e.dot} /></span>
+        <Icon className="size-[1.18rem]" aria-hidden />
+        <span aria-hidden className={cx('absolute -right-0.5 -top-0.5 size-2.5 rounded-full ring-2 ring-bg', e.dotCls)} />
         <span className="pointer-events-none absolute left-13 z-50 whitespace-nowrap rounded-lg border border-line2 bg-raised px-2 py-1 text-xs text-fg opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
           Engine: {e.label}{!engineOnline ? ' (offline)' : ''}
         </span>
@@ -124,9 +125,9 @@ export function KillSwitchRailButton() {
         disabled={killed || state.connection !== 'open' || !engineOnline}
         onClick={() => setOpen(true)}
         aria-label="Emergency kill switch"
-        className="glass-pill-danger group relative grid size-11 place-items-center rounded-xl text-rose-300 disabled:cursor-not-allowed disabled:opacity-45"
+        className="group relative flex size-11 items-center justify-center rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-300 transition-colors hover:border-rose-400/50 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-45"
       >
-        <OctagonX className="size-[1.15rem]" aria-hidden />
+        <ShieldAlert className="size-[1.2rem]" aria-hidden />
         <span className="pointer-events-none absolute left-13 z-50 whitespace-nowrap rounded-lg border border-line2 bg-raised px-2 py-1 text-xs text-fg opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
           {killed ? 'Killed' : engineOnline ? 'Kill switch (Shift+K)' : 'Kill switch (engine offline)'}
         </span>
@@ -182,18 +183,20 @@ function WalletPill() {
   const { state, toast } = useTerminal();
   const phantom = usePhantom();
   const [paperStartSol] = usePaperBalance();
+  const { wallets: customWallets, balancesByAddr, sumExcluding } = useCustomWallets();
   const { open, setOpen, ref } = usePopover();
   const [depositOpen, setDepositOpen] = useState(false);
   const b = state.balances, loading = state.connection === 'connecting';
   const isShadow = state.engine.status === 'SHADOW';
-  const hotWallet = state.config?.config.wallets.hot_wallet_pubkey || phantom.publicKey || '';
+  const hotWallet = state.config?.config.wallets.hot_wallet_pubkey || '';
+  const extraCustom = sumExcluding([hotWallet, phantom.publicKey]);
+  const phantomExtraSol = phantom.connected && phantom.publicKey && phantom.publicKey !== hotWallet ? (phantom.solBalance ?? 0) : 0;
   const paperEquitySol = computePaperEquitySol(state, paperStartSol);
   const displaySol = isShadow
     ? paperEquitySol
-    : phantom.connected && phantom.solBalance != null && b.sol === 0
-      ? phantom.solBalance
-      : b.sol;
-  const displayUsd = displaySol * b.solUsd;
+    : b.sol + b.wsol + phantomExtraSol + extraCustom.sol;
+  const displayUsdc = isShadow ? 0 : b.usdc + extraCustom.usdc;
+  const displayUsd = displaySol * b.solUsd + displayUsdc;
   const active = isShadow || state.engineSource === 'bridge' || phantom.connected || !!hotWallet;
 
   const copyAddr = async (addr: string, label: string) => {
@@ -264,9 +267,9 @@ function WalletPill() {
               </div>
               <span className={cx(
                 'inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.72rem] font-semibold',
-                active ? 'bg-emerald-500/15 text-emerald-400' : 'bg-white/[0.06] text-muted',
+                active ? 'bg-accent/15 text-accent' : 'bg-white/[0.06] text-muted',
               )}>
-                <span className={cx('size-1.5 rounded-full', active ? 'bg-emerald-400' : 'bg-muted')} />
+                <span className={cx('size-1.5 rounded-full', active ? 'bg-accent' : 'bg-muted')} />
                 {active ? 'Active' : 'Idle'}
               </span>
             </div>
@@ -277,10 +280,44 @@ function WalletPill() {
                 <span className="text-sm font-medium text-muted">SOL</span>
               </div>
               <div className="mt-1.5 text-xs text-muted tabular-nums">
-                ≈ {fmtUsd(displayUsd)} · {b.usdc.toFixed(2)} USDC
+                ≈ {fmtUsd(displayUsd)} · {displayUsdc.toFixed(2)} USDC
               </div>
             </div>
           </div>
+
+          {/* Custom wallets summary (live on-chain balances synced from /wallets) */}
+          {customWallets.length > 0 && (() => {
+            const extra = sumExcluding([hotWallet, phantom.publicKey]);
+            return (
+              <div className="mb-2 border-t border-white/[0.06] pt-2.5">
+                <div className="mb-1.5 flex items-center justify-between px-1.5 text-[0.72rem] font-medium text-muted">
+                  <span>Custom wallets ({customWallets.length})</span>
+                  <Link href="/wallets" onClick={() => setOpen(false)} className="text-accent hover:underline">Manage →</Link>
+                </div>
+                <div className="max-h-28 space-y-1 overflow-y-auto">
+                  {customWallets.slice(0, 4).map((w) => {
+                    const wb = balancesByAddr[w.address] ?? { sol: 0, usdc: 0 };
+                    return (
+                      <div key={w.id} className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-2.5 py-1.5 text-xs">
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-fg">{w.title}</div>
+                          <div className="num text-[0.68rem] text-muted">{shortKey(w.address, 4)}</div>
+                        </div>
+                        <span className="shrink-0 tabular-nums text-fg2">
+                          {w.asset === 'usdc' ? `${wb.usdc.toFixed(2)} USDC` : `${fmtSol(wb.sol, 4)} SOL`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {(extra.sol > 0 || extra.usdc > 0) && (
+                  <div className="mt-1.5 px-1.5 text-[0.68rem] tabular-nums text-muted">
+                    On-chain custom: {fmtSol(extra.sol, 4)} SOL · {extra.usdc.toFixed(2)} USDC
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Phantom connect row */}
           <div className="flex items-center justify-between px-1.5 py-3.5 text-sm">
@@ -409,6 +446,7 @@ const QUICK_LINKS: { href: string; label: string; keywords: string }[] = [
 
 function GlobalSearch() {
   const { state } = useTerminal();
+  const { wallets: customWallets } = useCustomWallets();
   const { open, setOpen, ref } = usePopover();
   const [q, setQ] = useState('');
   const input = useRef<HTMLInputElement>(null);
@@ -422,6 +460,7 @@ function GlobalSearch() {
   }, []);
   const s = q.trim().toLowerCase().replace(/^\$/, '');
   const kols = s ? state.kols.filter((k) => k.label.toLowerCase().includes(s) || k.pubkey.toLowerCase().includes(s)).slice(0, 5) : [];
+  const wallets = s ? customWallets.filter((w) => w.title.toLowerCase().includes(s) || w.address.toLowerCase().includes(s)).slice(0, 4) : [];
   const tokens = s ? [...new Map([...state.positions, ...state.closed].filter((p) => p.symbol.toLowerCase().includes(s) || p.mint.toLowerCase() === s).map((p) => [p.mint, p])).values()].slice(0, 5) : [];
   const landers = s ? state.landers.filter((l) => l.name.toLowerCase().includes(s) || l.id.toLowerCase().includes(s)).slice(0, 4) : [];
   const sections = s ? QUICK_LINKS.filter((p) => p.label.toLowerCase().includes(s) || p.keywords.includes(s)).slice(0, 5) : [];
@@ -442,13 +481,15 @@ function GlobalSearch() {
           {newWallet && <Link href={`/watchlist#add=${q.trim()}`} onClick={done} className={item}><Plus className="size-4 text-muted" aria-hidden />Track this wallet <span className="num text-xs text-muted">{shortKey(q.trim())}</span></Link>}
           {kols.length > 0 && <div className="px-3 pb-1 pt-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">KOLs</div>}
           {kols.map((k) => <Link key={k.id} href={`/watchlist#${k.id}`} onClick={done} className={item}><Users className="size-4 text-muted" aria-hidden />{k.label}<span className="num ml-auto text-xs text-muted">{shortKey(k.pubkey)}</span></Link>)}
+          {wallets.length > 0 && <div className="px-3 pb-1 pt-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">Wallets</div>}
+          {wallets.map((w) => <Link key={w.id} href="/wallets" onClick={done} className={item}><Wallet className="size-4 text-muted" aria-hidden />{w.title}<span className="num ml-auto text-xs text-muted">{shortKey(w.address)}</span></Link>)}
           {tokens.length > 0 && <div className="px-3 pb-1 pt-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">Tokens</div>}
           {tokens.map((t) => <a key={t.mint} href={`https://solscan.io/token/${encodeURIComponent(t.mint)}`} target="_blank" rel="noopener noreferrer" onClick={done} className={item}><span className="font-semibold">${t.symbol}</span><span className="num ml-auto text-xs text-muted">{shortKey(t.mint)}</span></a>)}
           {landers.length > 0 && <div className="px-3 pb-1 pt-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">Landers</div>}
           {landers.map((l) => <Link key={l.id} href="/execution" onClick={done} className={item}><Zap className="size-4 text-muted" aria-hidden />{l.name}<span className="ml-auto text-xs text-muted">{l.enabled ? 'Enabled' : 'Off'}</span></Link>)}
           {sections.length > 0 && <div className="px-3 pb-1 pt-2 text-[0.7rem] font-semibold uppercase tracking-wider text-muted">Sections &amp; Settings</div>}
           {sections.map((p) => <Link key={p.href} href={p.href} onClick={done} className={item}><Settings className="size-4 text-muted" aria-hidden />{p.label}</Link>)}
-          {!newWallet && kols.length === 0 && tokens.length === 0 && landers.length === 0 && sections.length === 0 && <p className="px-3 py-3 text-sm text-muted">No matches for “{q.trim()}”.</p>}
+          {!newWallet && kols.length === 0 && wallets.length === 0 && tokens.length === 0 && landers.length === 0 && sections.length === 0 && <p className="px-3 py-3 text-sm text-muted">No matches for “{q.trim()}”.</p>}
         </div>
       )}
     </div>
@@ -486,10 +527,10 @@ export function TopBar() {
   return (
     <header className="sticky top-0 z-30 border-b border-line bg-black/85 backdrop-blur-xl">
       <div className="flex h-16 items-center gap-3 px-3 md:gap-4 md:px-7">
-        <Link href="/" className="flex shrink-0 items-center gap-2 text-[1.05rem]" aria-label="Whal Bot home">
+        <Link href="/" className="flex shrink-0 items-center gap-2 text-[1.05rem]" aria-label="Odex Bot home">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.png" alt="" className="size-8 rounded-lg md:hidden" />
-          <span className="hidden md:inline"><b className="font-bold">Whal</b> <span className="text-fg2">Bot</span></span>
+          <span className="hidden md:inline"><b className="font-bold">Odex</b> <span className="text-fg2">Bot</span></span>
         </Link>
         <GlobalSearch />
         <div className="flex shrink-0 items-center gap-2.5">

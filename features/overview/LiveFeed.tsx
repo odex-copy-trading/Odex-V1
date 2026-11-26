@@ -85,7 +85,7 @@ export function LiveFeed() {
   const [filter, setFilter] = useState<Filter>('all');
   const [frozen, setFrozen] = useState<FeedEvent[] | null>(null);
   const source = frozen ?? state.feed;
-  const items = useMemo(() => source.filter((e) => filter === 'all' || (filter === 'missed' ? e.outcome === 'missed' || e.outcome === 'expired' : e.outcome === filter)).slice(0, 120), [source, filter]);
+  const items = useMemo(() => source.filter((e) => e.kind !== 'launch' && (filter === 'all' || (filter === 'missed' ? e.outcome === 'missed' || e.outcome === 'expired' : e.outcome === filter))).slice(0, 120), [source, filter]);
   const newSince = frozen ? state.feed.findIndex((e) => e.id === frozen[0]?.id) : 0;
   const loading = state.connection === 'connecting';
 
@@ -107,7 +107,7 @@ export function LiveFeed() {
         <div className="space-y-3 p-5" role="status" aria-label="Loading feed">{Array.from({ length: 7 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
       ) : items.length === 0 ? (
         <EmptyState icon={Radar} title={filter === 'all' ? 'Waiting for shred events' : 'Nothing matches this filter'}>
-          {filter === 'all' ? 'Detections from enabled KOLs and new launches will stream here.' : 'Try another filter.'}
+          {filter === 'all' ? 'Detections from enabled KOL wallets will stream here.' : 'Try another filter.'}
         </EmptyState>
       ) : (
         <ol className="max-h-[calc(100vh-15rem)] min-h-64 overflow-y-auto" aria-label="Feed events, newest first">

@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Design tokens carried over from the approved Whal Bot UI. */
+/* Design tokens carried over from the approved Odex Bot UI. */
 @theme {
   --color-bg: #000000;
   --color-panel: #0b0b0c;

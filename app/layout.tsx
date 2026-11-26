@@ -7,8 +7,8 @@ import './globals.css';
 const geist = Geist({ subsets: ['latin'], variable: '--font-geist', display: 'swap' });
 
 export const metadata: Metadata = {
-  title: { default: 'Whal Bot · Terminal', template: '%s · Whal Bot' },
-  description: 'Operator terminal for the Whal Bot engine (mock data).',
+  title: { default: 'Odex Bot · Terminal', template: '%s · Odex Bot' },
+  description: 'Operator terminal for the Odex Bot engine.',
   icons: { icon: '/Fav.png', shortcut: '/Fav.png', apple: '/Fav.png' },
   robots: { index: false, follow: false },
 };
@@ -17,8 +17,8 @@ export const viewport: Viewport = { themeColor: '#000000', colorScheme: 'dark' }
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={geist.variable}>
-      <body>
+    <html lang="en" className={geist.variable} suppressHydrationWarning>
+      <body suppressHydrationWarning>
         <AppShell>{children}</AppShell>
       </body>
     </html>
