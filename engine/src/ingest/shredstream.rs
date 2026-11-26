@@ -46,6 +46,7 @@ pub struct ShredStreamIngestor {
     bus: OpportunityBus,
     telemetry: Option<TelemetryEmitter>,
     latest_slot: Arc<AtomicU64>,
+    dev_dump_watcher: std::sync::RwLock<Option<(Arc<crate::exits::ExitEngine>, mpsc::Sender<PubkeyBytes>)>>,
 }
 
 impl ShredStreamIngestor {
@@ -61,6 +62,17 @@ impl ShredStreamIngestor {
             bus,
             telemetry,
             latest_slot: Arc::new(AtomicU64::new(0)),
+            dev_dump_watcher: std::sync::RwLock::new(None),
+        }
+    }
+
+    pub fn set_dev_dump_watcher(
+        &self,
+        exits: Arc<crate::exits::ExitEngine>,
+        tx: mpsc::Sender<PubkeyBytes>,
+    ) {
+        if let Ok(mut g) = self.dev_dump_watcher.write() {
+            *g = Some((exits, tx));
         }
     }
 
@@ -70,10 +82,36 @@ impl ShredStreamIngestor {
 
     /// Processes a single reconstructed shred transaction through the detector,
     /// publishes any resulting `TriggerEvent` onto the bounded broadcast bus, and
-    /// emits `kol_shred_detected` telemetry non-blockingly.
+    /// checks for 0-block Dev-Dump sells on any currently held position.
     #[inline]
     pub fn handle_decoded_tx(&self, tx: &DecodedTx) -> usize {
         self.latest_slot.fetch_max(tx.slot, Ordering::Relaxed);
+        // 0-Block Dev-Dump Exit: O(1) skip when no positions are open; if a held token's creator
+        // submits a Pump.fun sell/sell_v2/sell_v3 in shreds, trigger instant 100% 5-lander exit!
+        if let Ok(guard) = self.dev_dump_watcher.read() {
+            if let Some((exits, dump_tx)) = guard.as_ref() {
+                if exits.has_open_positions() {
+                    const DISC_SELL: [u8; 8] = [0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad];
+                    const DISC_SELL_V2: [u8; 8] = [0x5d, 0xf6, 0x82, 0x3c, 0xe7, 0xe9, 0x40, 0xb2];
+                    const DISC_SELL_V3: [u8; 8] = [0x1c, 0x92, 0xde, 0x77, 0x26, 0xc4, 0x69, 0xd5];
+                    for signer in &tx.signers {
+                        if let Some(pos) = exits.find_by_creator(signer) {
+                            let is_pump_sell = tx.instructions.iter().any(|ix| {
+                                ix.program_id == super::detector::PUMPFUN_PROGRAM_ID
+                                    && ix.data.len() >= 8
+                                    && matches!(
+                                        &ix.data[0..8],
+                                        d if d == DISC_SELL || d == DISC_SELL_V2 || d == DISC_SELL_V3
+                                    )
+                            });
+                            if is_pump_sell {
+                                let _ = dump_tx.try_send(pos.mint);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let triggers = self.detector.inspect_tx(tx);
         let count = triggers.len();
         for ev in triggers {

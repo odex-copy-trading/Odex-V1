@@ -329,6 +329,10 @@ impl ExecutorService {
                         dex_accounts: trigger.dex_accounts.clone(),
                         same_slot_tp_fired: false,
                         fired_steps: vec![],
+                        creator: match &trigger.kind {
+                            TriggerKind::ZeroBlockLaunch { creator, .. } => Some(*creator),
+                            _ => None,
+                        },
                     },
                     high_conviction,
                 );

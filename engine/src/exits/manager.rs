@@ -68,6 +68,7 @@ pub struct ManagedPosition {
     pub dex_accounts: Vec<PubkeyBytes>,
     pub same_slot_tp_fired: bool,
     pub fired_steps: Vec<bool>,
+    pub creator: Option<PubkeyBytes>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,18 +174,18 @@ impl ExitEngine {
             pos.breakeven_armed = true;
         }
 
-        // 1b. Fail-Fast Stop-Loss: dump 100% at -12% between 4–12s if momentum fails (avoids -6% wick shakeouts on +1/+2 slot entries)
-        if held_secs >= 4
+        // 1b. Fail-Fast Stop-Loss: dump 100% at -8% between 3–12s if momentum fails on Slot +0 entries
+        if held_secs >= 3
             && held_secs <= 12
             && mult > 0.0
-            && mult <= 0.88
-            && pos.peak_price_sol < entry_unit_price * 1.12
+            && mult <= 0.92
+            && pos.peak_price_sol < entry_unit_price * 1.10
         {
             return Some(ExitOrder {
                 mint: *mint,
                 sell_pct: 100,
                 close_account: true,
-                reason: "Fail-fast SL (2-3s)",
+                reason: "Fail-fast SL (-8%)",
             });
         }
 
@@ -318,6 +319,26 @@ impl ExitEngine {
         self.positions.iter().map(|e| e.value().clone()).collect()
     }
 
+    #[inline]
+    pub fn has_open_positions(&self) -> bool {
+        !self.positions.is_empty()
+    }
+
+    /// O(N<=5) lookup of an open confirmed position whose token creator matches `signer` (0-block Dev-Dump Exit).
+    #[inline]
+    pub fn find_by_creator(&self, signer: &PubkeyBytes) -> Option<ManagedPosition> {
+        if self.positions.is_empty() {
+            return None;
+        }
+        for entry in self.positions.iter() {
+            let p = entry.value();
+            if p.token_balance > 0 && p.creator.as_ref() == Some(signer) {
+                return Some(p.clone());
+            }
+        }
+        None
+    }
+
     pub fn remove_position(&self, mint: &PubkeyBytes) {
         self.positions.remove(mint);
         self.twap_state.remove(mint);
@@ -387,6 +408,7 @@ mod tests {
                 dex_accounts: vec![],
                 same_slot_tp_fired: false,
                 fired_steps: vec![],
+                creator: None,
             },
             true,
         );

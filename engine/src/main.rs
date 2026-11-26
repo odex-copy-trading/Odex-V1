@@ -947,6 +947,76 @@ async fn main() {
         });
     }
 
+    // 0-Block Dev-Dump Instant Exit consumer (reacts in <1ms to creator Pump.fun sells seen in LocalShred!)
+    {
+        let (dev_dump_tx, mut dev_dump_rx) = tokio::sync::mpsc::channel::<PubkeyBytes>(32);
+        ingest.shredstream.set_dev_dump_watcher(exit_engine.clone(), dev_dump_tx);
+        let dump_exits = exit_engine.clone();
+        let dump_exec = executor.clone();
+        let dump_shred = ingest.shredstream.clone();
+        let dump_hot = hot_wallet_pubkey;
+        let dump_sell_router = env_pubkey("WHAL_SELL_ROUTER_PROGRAM_ID");
+        tokio::spawn(async move {
+            let mut recent: std::collections::HashMap<PubkeyBytes, u64> = std::collections::HashMap::new();
+            while let Some(mint) = dev_dump_rx.recv().await {
+                let now_ms = now_ms();
+                if let Some(&prev) = recent.get(&mint) {
+                    if now_ms.saturating_sub(prev) < 2_500 {
+                        continue;
+                    }
+                }
+                recent.insert(mint, now_ms);
+                let Some(pos) = dump_exits.get_position(&mint) else { continue; };
+                if pos.token_balance == 0 {
+                    continue;
+                }
+                let token_prog = if pos.is_token_2022 {
+                    whal_engine::executor::TOKEN_2022_PROGRAM_ID
+                } else {
+                    whal_engine::executor::SPL_TOKEN_PROGRAM_ID
+                };
+                let cpi_accounts = whal_engine::executor::builder::build_venue_cpi_accounts(
+                    pos.venue,
+                    &pos.dex_accounts,
+                    dump_hot,
+                    pos.bot_token_account,
+                    None,
+                    token_prog,
+                );
+                let target_dex_program = match pos.venue {
+                    Venue::PumpFun => dump_exec.programs().pumpfun_program,
+                    Venue::PumpSwap => dump_exec.programs().pumpswap_program,
+                    Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => dump_exec.programs().launchlab_program,
+                };
+                info!(
+                    mint = %bs58::encode(&mint).into_string(),
+                    raw_tok_bal = pos.token_balance,
+                    "0-BLOCK DEV-DUMP DETECTED in LocalShred -> firing instant 100% 5-lander exit!"
+                );
+                let exec_clone = dump_exec.clone();
+                let params = whal_engine::exits::SellTxParams {
+                    sell_router_program: dump_sell_router,
+                    target_dex_program,
+                    venue: pos.venue,
+                    hot_wallet: dump_hot,
+                    bot_token_account: pos.bot_token_account,
+                    pool_or_curve: pos.pool_or_curve,
+                    is_token_2022: pos.is_token_2022,
+                    pre_balance: pos.token_balance,
+                    sell_pct: 100,
+                    min_quote_out: 0,
+                    min_liquidity_floor_lamports: 0,
+                    current_slot: dump_shred.latest_slot(),
+                    close_on_full_exit: true,
+                    cpi_accounts,
+                };
+                tokio::spawn(async move {
+                    let _ = exec_clone.execute_sell(params).await;
+                });
+            }
+        });
+    }
+
     // 1s Live Exit Engine Monitor Loop (drives Fail-Fast SL, TWAP drip, Exit Ladder & 45s Time-Stop on live positions)
     {
         let exit_rpc = rpc_url.clone();
