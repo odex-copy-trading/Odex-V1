@@ -528,6 +528,66 @@ impl SignalDetector {
                     if accs.len() >= 16 && accs.contains(&PUMPFUN_PROGRAM_ID) {
                         for start in 0..=accs.len().saturating_sub(16) {
                             if accs[start] == PUMP_GLOBAL {
+                                // Layout B (2026 Pump.fun V2 / FlashX / Axiom / Padre routers):
+                                // [0]=Global, [1]=Mint, [2]=WSOL, [3]=TokenProg, [5]=Curve, [6]=AssocCurve, [10]=CreatorVault
+                                if accs[start + 2] == WSOL_MINT && accs[start + 1] != [0u8; 32] && accs[start + 1] != WSOL_MINT {
+                                    let cand_mint = accs[start + 1];
+                                    let cand_curve = accs[start + 5];
+                                    if find_pda(&[b"bonding-curve", &cand_mint], &PUMPFUN_PROGRAM_ID) == cand_curve {
+                                        let is_t22 = accs[start + 3] == crate::executor::TOKEN_2022_PROGRAM_ID;
+                                        let is_mayhem = accs.contains(&PUMP_FEE_MAYHEM);
+                                        let mut dex_slice = build_local_pumpfun_buy_accounts(
+                                            cand_mint,
+                                            cand_curve,
+                                            kol.pubkey,
+                                            is_t22,
+                                            is_mayhem,
+                                            &[],
+                                        );
+                                        // Override exact associated_bonding_curve [4] & creator_vault [9] from FlashX/V2 slice
+                                        if accs[start + 6] != [0u8; 32] {
+                                            dex_slice[4] = accs[start + 6];
+                                        }
+                                        if accs[start + 10] != [0u8; 32] {
+                                            dex_slice[9] = accs[start + 10];
+                                        }
+                                        let watched_account = kol.quote_token_account.unwrap_or(kol.pubkey);
+                                        let pre_balance = self.balances.get(&watched_account).unwrap_or(0);
+                                        let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports);
+                                        let opportunity_key =
+                                            compute_opportunity_key(&cand_mint, tx.slot, StrategyId::KolBackrun);
+                                        info!(
+                                            slot = tx.slot,
+                                            kol = %kol.label,
+                                            is_token_2022 = is_t22,
+                                            "LocalShred 0-block KOL buy detected (router-wrapped Pump.fun V2 / FlashX)"
+                                        );
+                                        out.push(TriggerEvent {
+                                            opportunity_key,
+                                            strategy_id: StrategyId::KolBackrun,
+                                            trigger_slot: tx.slot,
+                                            detected_at_us,
+                                            venue: Venue::PumpFun,
+                                            mint: cand_mint,
+                                            quote_mint: WSOL_MINT,
+                                            pool_pda: cand_curve,
+                                            dex_accounts: dex_slice,
+                                            kind: TriggerKind::KolBuy {
+                                                kol_id: kol.id.clone(),
+                                                kol_wallet: kol.pubkey,
+                                                watched_balance_account: watched_account,
+                                                is_spl_quote: kol.is_spl_quote,
+                                                pre_balance,
+                                                balance_threshold,
+                                                estimated_kol_spend: kol.buy_size_lamports,
+                                                buy_size_lamports: kol.buy_size_lamports,
+                                                max_curve_reserve_lamports: kol.max_curve_reserve_lamports,
+                                            },
+                                        });
+                                        break 'router_scan;
+                                    }
+                                }
+                                // Layout A (Classic Pump.fun router): [0]=Global, [1]=Fee, [2]=Mint, [3]=Curve
                                 let cand_mint = accs[start + 2];
                                 let cand_curve = accs[start + 3];
                                 if cand_mint != [0u8; 32]
