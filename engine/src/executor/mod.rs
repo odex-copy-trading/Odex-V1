@@ -332,7 +332,7 @@ impl ExecutorService {
                         fired_steps: vec![],
                         creator: match &trigger.kind {
                             TriggerKind::ZeroBlockLaunch { creator, .. } => Some(*creator),
-                            _ => None,
+                            TriggerKind::KolBuy { kol_wallet, .. } => Some(*kol_wallet),
                         },
                     },
                     high_conviction,

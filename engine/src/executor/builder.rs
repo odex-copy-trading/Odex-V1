@@ -348,6 +348,7 @@ impl TxBuilder {
                 is_spl_quote,
                 pre_balance,
                 balance_threshold,
+                max_curve_reserve_lamports,
                 ..
             } = trigger.kind
             {
@@ -366,6 +367,17 @@ impl TxBuilder {
                             balance_threshold,
                         ));
                     }
+                }
+                // Shield 2b: On-chain Pump.fun bonding-curve reserve ceiling (offset 0x10 = virtual_sol_reserves).
+                // Aborts with 0 SOL tip if snipers/KOL pushed the curve above max_curve_reserve_lamports.
+                if trigger.venue == Venue::PumpFun && max_curve_reserve_lamports > 0 {
+                    ixs.push(crate::exits::assert_account_data_u64(
+                        "lighthouse_pumpfun_curve_cap",
+                        trigger.pool_pda,
+                        0x10,
+                        crate::exits::OP_LESS_THAN_OR_EQUAL,
+                        max_curve_reserve_lamports,
+                    ));
                 }
             }
         }

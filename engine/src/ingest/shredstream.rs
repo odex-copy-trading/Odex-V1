@@ -96,15 +96,24 @@ impl ShredStreamIngestor {
                     const DISC_SELL_V3: [u8; 8] = [0x1c, 0x92, 0xde, 0x77, 0x26, 0xc4, 0x69, 0xd5];
                     for signer in &tx.signers {
                         if let Some(pos) = exits.find_by_creator(signer) {
-                            let is_pump_sell = tx.instructions.iter().any(|ix| {
-                                ix.program_id == super::detector::PUMPFUN_PROGRAM_ID
+                            let is_direct_sell = tx.instructions.iter().any(|ix| {
+                                (ix.program_id == super::detector::PUMPFUN_PROGRAM_ID
+                                    || ix.program_id == super::detector::PUMPSWAP_PROGRAM_ID)
                                     && ix.data.len() >= 8
                                     && matches!(
                                         &ix.data[0..8],
                                         d if d == DISC_SELL || d == DISC_SELL_V2 || d == DISC_SELL_V3
                                     )
                             });
-                            if is_pump_sell {
+                            // Also catch router-wrapped KOL/dev sells (Axiom/Photon/Bloom/Trojan) after entry slot + 1
+                            let is_router_sell = !is_direct_sell
+                                && tx.slot > pos.opened_slot.saturating_add(1)
+                                && tx.instructions.iter().any(|ix| {
+                                    ix.accounts.contains(&pos.mint)
+                                        && (ix.accounts.contains(&super::detector::PUMPFUN_PROGRAM_ID)
+                                            || ix.accounts.contains(&super::detector::PUMPSWAP_PROGRAM_ID))
+                                });
+                            if is_direct_sell || is_router_sell {
                                 let _ = dump_tx.try_send(pos.mint);
                             }
                         }
