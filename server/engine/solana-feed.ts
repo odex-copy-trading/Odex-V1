@@ -1314,7 +1314,9 @@ export class SolanaLiveFeed {
         const userVolPda = deriveUserVolumeAccumulator(this.cp.configState().config.wallets.hot_wallet_pubkey);
         if (userVolPda) dexAccounts[13] = userVolPda;
       }
-      const poolPda = dexAccounts[3] ?? dexAccounts[0] ?? boughtMint;
+      const poolPda = dexIx?.programId === 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA'
+        ? (dexAccounts[0] ?? boughtMint)
+        : (dexAccounts[3] ?? dexAccounts[0] ?? boughtMint);
       const entryPriceSol = solSpent / boughtTokens;
       this.onKolBuySignal(
         {
@@ -1387,8 +1389,9 @@ export class SolanaLiveFeed {
     if (this.cp.engineStatus === 'SHADOW' && this.paper.size < 5 && !this.paper.has(msg.mint)) {
       this.openPaperPosition(ev, kol.buySizeSol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, msg.entryPriceSol);
     } else if (this.cp.engineStatus === 'RUNNING') {
-      // Direct-native Rust executor executes Pump.fun bonding-curve buys; skip non-Pump.fun venues to prevent Custom(3007) reverts.
-      if (ev.venue !== 'Pump.fun') return;
+      // Direct-native Rust executor supports Pump.fun bonding-curve + PumpSwap AMM (with atomic WSOL wrap/unwrap).
+      if (ev.venue !== 'Pump.fun' && ev.venue !== 'PumpSwap') return;
+      if (ev.venue === 'PumpSwap' && (!msg.dexAccounts || msg.dexAccounts.length < 17)) return;
       const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));
       if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
       const maxAffordable = this.solBalance > 0.11 ? +(this.solBalance - 0.06).toFixed(4) : kol.buySizeSol;

@@ -53,6 +53,7 @@ pub const DISC_PUMPFUN_BUY_EXACT_SOL_IN_V3: [u8; 8] = [0x2a, 0x39, 0xbe, 0xb0, 0
 pub const DISC_PUMPFUN_CREATE_V2: [u8; 8] = [0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77];
 pub const DISC_PUMPFUN_CREATE_V2_TOKEN2022: [u8; 8] = [0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4];
 pub const DISC_PUMPSWAP_BUY: [u8; 8] = [0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea];
+pub const DISC_PUMPSWAP_BUY_EXACT_QUOTE_IN: [u8; 8] = [0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70];
 pub const DISC_LAUNCHLAB_BUY_EXACT_IN: [u8; 8] = [0xfa, 0xea, 0x0d, 0x7b, 0xd5, 0x9c, 0x13, 0xec];
 pub const DISC_LAUNCHLAB_INITIALIZE: [u8; 8] = [0xaf, 0xaf, 0x6d, 0x1f, 0x0d, 0x98, 0x9b, 0xed];
 
@@ -250,12 +251,18 @@ fn parse_buy_ix(ix: &DecodedInstruction) -> Option<ParsedBuy> {
         }
     }
 
-    if ix.program_id == PUMPSWAP_PROGRAM_ID && disc == DISC_PUMPSWAP_BUY {
-        // PumpSwap buy layout: [pool(0), user(1), global_config(2), base_mint(3), quote_mint(4), ...]
+    if ix.program_id == PUMPSWAP_PROGRAM_ID
+        && (disc == DISC_PUMPSWAP_BUY || disc == DISC_PUMPSWAP_BUY_EXACT_QUOTE_IN)
+    {
+        // PumpSwap buy / buy_exact_quote_in layout: [pool(0), user(1), global_config(2), base_mint(3), quote_mint(4), ...]
         let pool_pda = *ix.accounts.get(0)?;
         let mint = *ix.accounts.get(3)?;
         let quote_mint = *ix.accounts.get(4)?;
-        let estimated_spend = read_u64(&ix.data, 16)?;
+        let estimated_spend = if disc == DISC_PUMPSWAP_BUY_EXACT_QUOTE_IN {
+            read_u64(&ix.data, 8)?
+        } else {
+            read_u64(&ix.data, 16)?
+        };
         return Some(ParsedBuy {
             venue: Venue::PumpSwap,
             mint,
@@ -447,8 +454,10 @@ impl SignalDetector {
         // 1. KOL Buy Detector: check if any tx signer is on the active KOL watchlist.
         let matched_kol = tx.signers.iter().find_map(|s| self.watchlist.match_signer(s));
         if let Some(kol) = matched_kol {
+            let mut found_direct = false;
             for ix in &tx.instructions {
                 if let Some(buy) = parse_buy_ix(ix) {
+                    found_direct = true;
                     let watched_account = kol.quote_token_account.unwrap_or(kol.pubkey);
                     let pre_balance = self.balances.get(&watched_account).unwrap_or(0);
                     let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports);
@@ -458,6 +467,13 @@ impl SignalDetector {
                         StrategyId::KolBackrun
                     };
                     let opportunity_key = compute_opportunity_key(&buy.mint, tx.slot, strategy_id);
+                    info!(
+                        slot = tx.slot,
+                        kol = %kol.label,
+                        venue = ?buy.venue,
+                        buy_size_lamports = kol.buy_size_lamports,
+                        "LocalShred 0-block KOL buy detected (direct)"
+                    );
                     out.push(TriggerEvent {
                         opportunity_key,
                         strategy_id,
@@ -480,6 +496,123 @@ impl SignalDetector {
                             max_curve_reserve_lamports: kol.max_curve_reserve_lamports,
                         },
                     });
+                }
+            }
+
+            // Router-wrapped KOL buys (Axiom / Photon / Bloom / Trojan / Jupiter):
+            // Scan outer router accounts for contiguous Pump.fun or PumpSwap CPI account slices at 0-block.
+            if !found_direct {
+                'router_scan: for ix in &tx.instructions {
+                    let accs = &ix.accounts;
+                    if accs.len() >= 16 && accs.contains(&PUMPFUN_PROGRAM_ID) {
+                        for start in 0..=accs.len().saturating_sub(16) {
+                            if accs[start] == PUMP_GLOBAL {
+                                let cand_mint = accs[start + 2];
+                                let cand_curve = accs[start + 3];
+                                if cand_mint != [0u8; 32]
+                                    && cand_mint != WSOL_MINT
+                                    && find_pda(&[b"bonding-curve", &cand_mint], &PUMPFUN_PROGRAM_ID) == cand_curve
+                                {
+                                    let slice_end = (start + 18).min(accs.len());
+                                    let mut dex_slice = accs[start..slice_end].to_vec();
+                                    let is_t22 = dex_slice.get(8) == Some(&crate::executor::TOKEN_2022_PROGRAM_ID);
+                                    let is_mayhem = dex_slice.get(1) == Some(&PUMP_FEE_MAYHEM);
+                                    if dex_slice.len() < 18 {
+                                        dex_slice = build_local_pumpfun_buy_accounts(
+                                            cand_mint,
+                                            cand_curve,
+                                            kol.pubkey,
+                                            is_t22,
+                                            is_mayhem,
+                                            &dex_slice,
+                                        );
+                                    }
+                                    let watched_account = kol.quote_token_account.unwrap_or(kol.pubkey);
+                                    let pre_balance = self.balances.get(&watched_account).unwrap_or(0);
+                                    let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports);
+                                    let opportunity_key =
+                                        compute_opportunity_key(&cand_mint, tx.slot, StrategyId::KolBackrun);
+                                    info!(
+                                        slot = tx.slot,
+                                        kol = %kol.label,
+                                        is_token_2022 = is_t22,
+                                        "LocalShred 0-block KOL buy detected (router-wrapped Pump.fun)"
+                                    );
+                                    out.push(TriggerEvent {
+                                        opportunity_key,
+                                        strategy_id: StrategyId::KolBackrun,
+                                        trigger_slot: tx.slot,
+                                        detected_at_us,
+                                        venue: Venue::PumpFun,
+                                        mint: cand_mint,
+                                        quote_mint: WSOL_MINT,
+                                        pool_pda: cand_curve,
+                                        dex_accounts: dex_slice,
+                                        kind: TriggerKind::KolBuy {
+                                            kol_id: kol.id.clone(),
+                                            kol_wallet: kol.pubkey,
+                                            watched_balance_account: watched_account,
+                                            is_spl_quote: kol.is_spl_quote,
+                                            pre_balance,
+                                            balance_threshold,
+                                            estimated_kol_spend: kol.buy_size_lamports,
+                                            buy_size_lamports: kol.buy_size_lamports,
+                                            max_curve_reserve_lamports: kol.max_curve_reserve_lamports,
+                                        },
+                                    });
+                                    break 'router_scan;
+                                }
+                            }
+                        }
+                    }
+                    if accs.len() >= 17 && accs.contains(&PUMPSWAP_PROGRAM_ID) {
+                        for start in 0..=accs.len().saturating_sub(17) {
+                            if accs[start + 4] == WSOL_MINT
+                                && accs[start + 3] != WSOL_MINT
+                                && accs[start + 3] != [0u8; 32]
+                                && (accs[start + 12] == crate::executor::SPL_TOKEN_PROGRAM_ID
+                                    || accs[start + 12] == crate::executor::TOKEN_2022_PROGRAM_ID)
+                            {
+                                let pool_pda = accs[start];
+                                let cand_mint = accs[start + 3];
+                                let slice_end = (start + 23).min(accs.len());
+                                let dex_slice = accs[start..slice_end].to_vec();
+                                let watched_account = kol.quote_token_account.unwrap_or(kol.pubkey);
+                                let pre_balance = self.balances.get(&watched_account).unwrap_or(0);
+                                let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports);
+                                let opportunity_key =
+                                    compute_opportunity_key(&cand_mint, tx.slot, StrategyId::KolBackrun);
+                                info!(
+                                    slot = tx.slot,
+                                    kol = %kol.label,
+                                    "LocalShred 0-block KOL buy detected (router-wrapped PumpSwap)"
+                                );
+                                out.push(TriggerEvent {
+                                    opportunity_key,
+                                    strategy_id: StrategyId::KolBackrun,
+                                    trigger_slot: tx.slot,
+                                    detected_at_us,
+                                    venue: Venue::PumpSwap,
+                                    mint: cand_mint,
+                                    quote_mint: WSOL_MINT,
+                                    pool_pda,
+                                    dex_accounts: dex_slice,
+                                    kind: TriggerKind::KolBuy {
+                                        kol_id: kol.id.clone(),
+                                        kol_wallet: kol.pubkey,
+                                        watched_balance_account: watched_account,
+                                        is_spl_quote: kol.is_spl_quote,
+                                        pre_balance,
+                                        balance_threshold,
+                                        estimated_kol_spend: kol.buy_size_lamports,
+                                        buy_size_lamports: kol.buy_size_lamports,
+                                        max_curve_reserve_lamports: kol.max_curve_reserve_lamports,
+                                    },
+                                });
+                                break 'router_scan;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -572,7 +705,12 @@ impl SignalDetector {
         dev_buy: u64,
         filter: &LaunchFilterConfig,
     ) -> bool {
-        if dev_buy < filter.min_dev_buy_lamports || dev_buy > filter.max_dev_buy_lamports {
+        // Block automated 1.00/1.01 SOL farm-bot template launches + require >= 1.2 SOL conviction dev buy.
+        let effective_min = filter.min_dev_buy_lamports.max(1_200_000_000);
+        if dev_buy < effective_min || dev_buy > filter.max_dev_buy_lamports {
+            return false;
+        }
+        if (990_000_000..=1_020_000_000).contains(&dev_buy) {
             return false;
         }
         if !filter.allowed_quote_mints.is_empty()

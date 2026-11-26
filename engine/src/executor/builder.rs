@@ -48,6 +48,31 @@ pub const ASSOCIATED_TOKEN_PROGRAM_ID: PubkeyBytes = [
     0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9, 0xf8, 0x59,
 ];
 
+/// Derives the canonical SPL Associated Token Account PDA (`[owner, token_program, mint]`).
+pub fn derive_associated_token_account(
+    owner: &PubkeyBytes,
+    mint: &PubkeyBytes,
+    token_program: &PubkeyBytes,
+) -> PubkeyBytes {
+    const PDA_MARKER: &[u8] = b"ProgramDerivedAddress";
+    for bump in (0u8..=255).rev() {
+        let mut h = Sha256::new();
+        h.update(owner);
+        h.update(token_program);
+        h.update(mint);
+        h.update([bump]);
+        h.update(ASSOCIATED_TOKEN_PROGRAM_ID);
+        h.update(PDA_MARKER);
+        let digest = h.finalize();
+        let mut cand = [0u8; 32];
+        cand.copy_from_slice(&digest);
+        if ed25519_dalek::VerifyingKey::from_bytes(&cand).is_err() {
+            return cand;
+        }
+    }
+    [0u8; 32]
+}
+
 /// Rent-exempt minimum for a 165-byte SPL token account (~0.00203928 SOL).
 pub const TOKEN_ACCOUNT_RENT_LAMPORTS: u64 = 2_039_280;
 pub const TOKEN_ACCOUNT_SPACE: u64 = 165;
@@ -473,7 +498,7 @@ impl TxBuilder {
                 accounts: accs,
                 data: gq_data,
             });
-        } else if trigger.venue == Venue::PumpSwap && p.use_standalone_guard_for_pumpswap {
+        } else if !direct_native_dex && trigger.venue == Venue::PumpSwap && p.use_standalone_guard_for_pumpswap {
             // Standalone 115-CU Guard (Program #2 Mode A) + native PumpSwap Buy
             if let Some(kol_acc) = kol_watched {
                 let mut guard_data = Vec::with_capacity(15);
@@ -516,16 +541,64 @@ impl TxBuilder {
                 data: ps_data,
             });
         } else if direct_native_dex {
-            // Direct native DEX buy (no custom Pinocchio guard programs required — ideal for small live SOL tests)
+            // Direct native DEX buy (Pump.fun `buy_exact_sol_in` or PumpSwap `buy_exact_quote_in` with atomic WSOL wrap/unwrap)
             let target_prog = match trigger.venue {
                 Venue::PumpFun => self.programs.pumpfun_program,
                 Venue::PumpSwap => self.programs.pumpswap_program,
                 Venue::RaydiumLaunchLab | Venue::RaydiumCpmm => self.programs.launchlab_program,
             };
+            let wsol_ata = if trigger.venue == Venue::PumpSwap {
+                let ata = derive_associated_token_account(&p.hot_wallet, &WSOL_MINT, &SPL_TOKEN_PROGRAM_ID);
+                // 1. CreateIdempotent WSOL ATA
+                ixs.push(InstructionSpec {
+                    label: "create_wsol_ata_idempotent",
+                    program_id: ASSOCIATED_TOKEN_PROGRAM_ID,
+                    accounts: vec![
+                        AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: true },
+                        AccountMetaSpec { pubkey: ata, is_signer: false, is_writable: true },
+                        AccountMetaSpec { pubkey: p.hot_wallet, is_signer: false, is_writable: false },
+                        AccountMetaSpec { pubkey: WSOL_MINT, is_signer: false, is_writable: false },
+                        AccountMetaSpec { pubkey: SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                        AccountMetaSpec { pubkey: SPL_TOKEN_PROGRAM_ID, is_signer: false, is_writable: false },
+                    ],
+                    data: vec![1u8],
+                });
+                // 2. Fund WSOL ATA with buy_size lamports (+2% headroom for PumpSwap LP+protocol fee)
+                let wrap_lamports = buy_size.saturating_add(buy_size / 50);
+                let mut xfer_data = Vec::with_capacity(12);
+                xfer_data.extend_from_slice(&2u32.to_le_bytes());
+                xfer_data.extend_from_slice(&wrap_lamports.to_le_bytes());
+                ixs.push(InstructionSpec {
+                    label: "transfer_sol_to_wsol_ata",
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![
+                        AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: true },
+                        AccountMetaSpec { pubkey: ata, is_signer: false, is_writable: true },
+                    ],
+                    data: xfer_data,
+                });
+                // 3. Token::SyncNative(wsol_ata)
+                ixs.push(InstructionSpec {
+                    label: "sync_native_wsol",
+                    program_id: SPL_TOKEN_PROGRAM_ID,
+                    accounts: vec![
+                        AccountMetaSpec { pubkey: ata, is_signer: false, is_writable: true },
+                    ],
+                    data: vec![17u8],
+                });
+                Some(ata)
+            } else {
+                None
+            };
             let mut buy_data = Vec::with_capacity(24);
             if trigger.venue == Venue::PumpFun {
                 // Pump.fun `buy_exact_sol_in(spendable_sol_in, min_tokens_out)` — spends exact configured buy_size SOL.
                 buy_data.extend_from_slice(&[0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f]);
+                buy_data.extend_from_slice(&buy_size.to_le_bytes());
+                buy_data.extend_from_slice(&p.min_tokens_out.max(1).to_le_bytes());
+            } else if trigger.venue == Venue::PumpSwap {
+                // PumpSwap `buy_exact_quote_in(spendable_quote_in, min_base_amount_out)`
+                buy_data.extend_from_slice(&[0xc6, 0x2e, 0x15, 0x52, 0xb4, 0xd9, 0xe8, 0x70]);
                 buy_data.extend_from_slice(&buy_size.to_le_bytes());
                 buy_data.extend_from_slice(&p.min_tokens_out.max(1).to_le_bytes());
             } else {
@@ -538,7 +611,7 @@ impl TxBuilder {
                 &trigger.dex_accounts,
                 p.hot_wallet,
                 ephemeral_ata,
-                None,
+                wsol_ata,
                 token_program,
             );
             let native_accs = if cpi_accs.is_empty() {
@@ -556,6 +629,19 @@ impl TxBuilder {
                 accounts: native_accs,
                 data: buy_data,
             });
+            // Unwrap any unused WSOL headroom + reclaim rent back to hot_wallet atomically
+            if let Some(ata) = wsol_ata {
+                ixs.push(InstructionSpec {
+                    label: "close_wsol_ata_unwrap",
+                    program_id: SPL_TOKEN_PROGRAM_ID,
+                    accounts: vec![
+                        AccountMetaSpec { pubkey: ata, is_signer: false, is_writable: true },
+                        AccountMetaSpec { pubkey: p.hot_wallet, is_signer: false, is_writable: true },
+                        AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: false },
+                    ],
+                    data: vec![9u8],
+                });
+            }
         } else {
             // Program #2 Mode B: Multi-KOL Guard + Venue CPI Buy Router
             let (target_prog, venue_byte) = match trigger.venue {

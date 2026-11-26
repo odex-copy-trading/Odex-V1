@@ -1062,10 +1062,18 @@ async fn main() {
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
-                let mut keys: Vec<String> = Vec::with_capacity(open.len() * 2);
+                let mut keys: Vec<String> = Vec::with_capacity(open.len() * 3);
                 for p in &open {
-                    keys.push(bs58::encode(&p.pool_or_curve).into_string());
-                    keys.push(bs58::encode(&p.bot_token_account).into_string());
+                    if p.venue == Venue::PumpSwap && p.dex_accounts.len() > 8 {
+                        // PumpSwap live price = pool_quote_vault[64..72] / pool_base_vault[64..72]
+                        keys.push(bs58::encode(&p.dex_accounts[7]).into_string());
+                        keys.push(bs58::encode(&p.bot_token_account).into_string());
+                        keys.push(bs58::encode(&p.dex_accounts[8]).into_string());
+                    } else {
+                        keys.push(bs58::encode(&p.pool_or_curve).into_string());
+                        keys.push(bs58::encode(&p.bot_token_account).into_string());
+                        keys.push(bs58::encode(&p.pool_or_curve).into_string());
+                    }
                 }
                 let req_body = json!({
                     "jsonrpc": "2.0",
@@ -1088,28 +1096,47 @@ async fn main() {
                 let mut live_ui_positions: Vec<Value> = Vec::with_capacity(open.len());
                 for (i, pos) in open.iter().enumerate() {
                     let b64 = vals
-                        .get(i * 2)
+                        .get(i * 3)
                         .and_then(|v| v.pointer("/data/0"))
                         .and_then(|v| v.as_str());
-                    let (price_sol, v_sol_lamports) = match b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()) {
-                        Some(buf) if buf.len() >= 24 => {
-                            if pos.venue == Venue::PumpFun && buf.len() >= 81 {
-                                if let Ok(live_creator) = <[u8; 32]>::try_from(&buf[49..81]) {
-                                    if live_creator != [0u8; 32] {
-                                        let live_vault = whal_engine::ingest::detector::derive_pumpfun_creator_vault(&live_creator);
-                                        exit_mgr.sync_creator_vault(&pos.mint, live_vault);
+                    let (price_sol, v_sol_lamports) = if pos.venue == Venue::PumpSwap && pos.dex_accounts.len() > 8 {
+                        let q_b64 = vals
+                            .get(i * 3 + 2)
+                            .and_then(|v| v.pointer("/data/0"))
+                            .and_then(|v| v.as_str());
+                        match (
+                            b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()),
+                            q_b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()),
+                        ) {
+                            (Some(base_buf), Some(quote_buf)) if base_buf.len() >= 72 && quote_buf.len() >= 72 => {
+                                let base_tok = u64::from_le_bytes(base_buf[64..72].try_into().unwrap_or([0; 8])) as f64 / 1e6;
+                                let quote_sol = u64::from_le_bytes(quote_buf[64..72].try_into().unwrap_or([0; 8]));
+                                let px = if base_tok > 0.0 { (quote_sol as f64 / 1e9) / base_tok } else { 0.0 };
+                                (px, quote_sol)
+                            }
+                            _ => (0.0, 30_000_000_000),
+                        }
+                    } else {
+                        match b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()) {
+                            Some(buf) if buf.len() >= 24 => {
+                                if pos.venue == Venue::PumpFun && buf.len() >= 81 {
+                                    if let Ok(live_creator) = <[u8; 32]>::try_from(&buf[49..81]) {
+                                        if live_creator != [0u8; 32] {
+                                            let live_vault = whal_engine::ingest::detector::derive_pumpfun_creator_vault(&live_creator);
+                                            exit_mgr.sync_creator_vault(&pos.mint, live_vault);
+                                        }
                                     }
                                 }
+                                let v_tokens = u64::from_le_bytes(buf[8..16].try_into().unwrap_or([0; 8])) as f64 / 1e6;
+                                let v_sol = u64::from_le_bytes(buf[16..24].try_into().unwrap_or([0; 8]));
+                                let px = if v_tokens > 0.0 { (v_sol as f64 / 1e9) / v_tokens } else { 0.0 };
+                                (px, v_sol)
                             }
-                            let v_tokens = u64::from_le_bytes(buf[8..16].try_into().unwrap_or([0; 8])) as f64 / 1e6;
-                            let v_sol = u64::from_le_bytes(buf[16..24].try_into().unwrap_or([0; 8]));
-                            let px = if v_tokens > 0.0 { (v_sol as f64 / 1e9) / v_tokens } else { 0.0 };
-                            (px, v_sol)
+                            _ => (0.0, 30_000_000_000),
                         }
-                        _ => (0.0, 30_000_000_000),
                     };
                     let tok_b64 = vals
-                        .get(i * 2 + 1)
+                        .get(i * 3 + 1)
                         .and_then(|v| v.pointer("/data/0"))
                         .and_then(|v| v.as_str());
                     let raw_tok_bal: u64 = match tok_b64.and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()) {

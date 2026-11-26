@@ -2,9 +2,10 @@
 //! (`whal-sell-router`), and `Token::CloseAccount` rent reclaim on 100% exits.
 
 use crate::executor::{
-    AccountMetaSpec, InstructionSpec, SPL_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
+    derive_associated_token_account, AccountMetaSpec, InstructionSpec, ASSOCIATED_TOKEN_PROGRAM_ID,
+    SPL_TOKEN_PROGRAM_ID, SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
 };
-use crate::ingest::{PubkeyBytes, Venue};
+use crate::ingest::{PubkeyBytes, Venue, WSOL_MINT};
 use super::lighthouse::{
     assert_clock_slot_lte, assert_pumpfun_liquidity_floor, assert_sell_dedupe_balance,
 };
@@ -80,6 +81,28 @@ pub fn build_protected_sell_instructions(p: &SellTxParams) -> Vec<InstructionSpe
         // Pump.fun 2026 sell account layout: swap creator_vault(8) & token_program(9),
         // and strip buy-only global/user volume accumulators [12..14] so fee_config & fee_program sit at [12..14].
         let mut native_accs = p.cpi_accounts.clone();
+        let wsol_ata = if p.venue == Venue::PumpSwap {
+            let ata = derive_associated_token_account(&p.hot_wallet, &WSOL_MINT, &SPL_TOKEN_PROGRAM_ID);
+            ixs.push(InstructionSpec {
+                label: "create_wsol_ata_for_sell",
+                program_id: ASSOCIATED_TOKEN_PROGRAM_ID,
+                accounts: vec![
+                    AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: true },
+                    AccountMetaSpec { pubkey: ata, is_signer: false, is_writable: true },
+                    AccountMetaSpec { pubkey: p.hot_wallet, is_signer: false, is_writable: false },
+                    AccountMetaSpec { pubkey: WSOL_MINT, is_signer: false, is_writable: false },
+                    AccountMetaSpec { pubkey: SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
+                    AccountMetaSpec { pubkey: SPL_TOKEN_PROGRAM_ID, is_signer: false, is_writable: false },
+                ],
+                data: vec![1u8],
+            });
+            if native_accs.len() > 6 {
+                native_accs[6] = AccountMetaSpec { pubkey: ata, is_signer: false, is_writable: true };
+            }
+            Some(ata)
+        } else {
+            None
+        };
         if p.venue == Venue::PumpFun && native_accs.len() >= 10 {
             native_accs.swap(8, 9);
             if native_accs.len() >= 16 {
@@ -92,6 +115,19 @@ pub fn build_protected_sell_instructions(p: &SellTxParams) -> Vec<InstructionSpe
             accounts: native_accs,
             data: native_data,
         });
+        if let Some(ata) = wsol_ata {
+            // Unwrap WSOL proceeds back into native SOL in the hot wallet atomically
+            ixs.push(InstructionSpec {
+                label: "close_wsol_ata_unwrap_sell",
+                program_id: SPL_TOKEN_PROGRAM_ID,
+                accounts: vec![
+                    AccountMetaSpec { pubkey: ata, is_signer: false, is_writable: true },
+                    AccountMetaSpec { pubkey: p.hot_wallet, is_signer: false, is_writable: true },
+                    AccountMetaSpec { pubkey: p.hot_wallet, is_signer: true, is_writable: false },
+                ],
+                data: vec![TOKEN_IX_CLOSE_ACCOUNT],
+            });
+        }
         if p.sell_pct >= 100 && p.close_on_full_exit {
             ixs.push(InstructionSpec {
                 label: "token_close_account_rent_reclaim",
