@@ -236,13 +236,13 @@ impl ExitEngine {
             }
         }
 
-        // 3a. Fhbh1D 18s hard time-stop for flat/dead positions (< +5% and never popped >= +18%)
-        if held_secs >= 18 && mult > 0.0 && mult < 1.05 && pos.peak_price_sol < entry_unit_price * 1.18 {
+        // 3a. 45s dead-position time-stop (1:1 parity with 11-24 Paper Mode winner) for flat/dead positions (< +5% and never popped >= +18%)
+        if held_secs >= 45 && mult > 0.0 && mult < 1.05 && pos.peak_price_sol < entry_unit_price * 1.18 {
             return Some(ExitOrder {
                 mint: *mint,
                 sell_pct: 100,
                 close_account: true,
-                reason: "Time-stop (18s)",
+                reason: "Time-stop (45s)",
             });
         }
 
