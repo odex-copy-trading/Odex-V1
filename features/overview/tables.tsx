@@ -137,7 +137,7 @@ export function SignalsTab({ rows }: { rows: FeedEvent[] }) {
   if (!rows.length) return <EmptyState icon={Radar} title="Waiting for copied trader signals">Live buy and sell signals from your tracked traders stream here.</EmptyState>;
   return (
     <table className="w-full">
-      <thead><tr><RTh>Token</RTh><RTh>Copied trader</RTh><RTh right className="hidden md:table-cell">Size</RTh><RTh right className="hidden lg:table-cell">Fan-out</RTh><RTh className="hidden lg:table-cell">Winner</RTh><RTh className="hidden xl:table-cell">Reverts</RTh><RTh>Time</RTh><RTh right className="hidden sm:table-cell">Slot</RTh></tr></thead>
+      <thead><tr><RTh>Token</RTh><RTh>Copied trader</RTh><RTh right className="hidden md:table-cell">Size</RTh><RTh right className="hidden lg:table-cell">Fan-out</RTh><RTh className="hidden lg:table-cell">Winner</RTh><RTh className="hidden xl:table-cell">Side</RTh><RTh>Time</RTh><RTh right className="hidden sm:table-cell">Slot</RTh></tr></thead>
       <tbody>
         {rows.map((e) => {
           const rev = REVERT_META.reduce((a, m) => a + e.reverts[m.key], 0);
@@ -152,7 +152,11 @@ export function SignalsTab({ rows }: { rows: FeedEvent[] }) {
               <RTd right className="hidden md:table-cell"><NumCell top={`${fmtSol(e.sizeSol, e.kind === 'sell' ? 4 : 2)} SOL`} bottom={e.kind === 'sell' ? 'proceeds' : 'copy size'} /></RTd>
               <RTd right className="hidden lg:table-cell"><NumCell top={e.fanout ? `${e.fanout} tx` : '—'} bottom={e.cuUsed ? `${fmtCompact(e.cuUsed)} CU` : 'not sent'} /></RTd>
               <RTd className="hidden lg:table-cell"><div className="text-[0.84rem]">{e.winner ? <Link href="/execution" className="hover:text-accent hover:underline">{LANDER_NAME[e.winner]}</Link> : <span className="text-muted">—</span>}</div><div className="text-[0.74rem] text-muted">{e.fanout ? `${rev} reverted` : ''}</div></RTd>
-              <RTd className="hidden xl:table-cell">{e.fanout && e.kind !== 'sell' ? <div className="w-40"><RevertBar r={e.reverts} total={e.fanout} /><div className="mt-1.5 truncate text-[0.72rem] text-muted tabular-nums">{REVERT_META.filter((m) => e.reverts[m.key]).map((m) => `${m.short} ${e.reverts[m.key]}`).join(' · ') || 'none'}</div></div> : <span className="text-[0.78rem] text-muted">{e.note ?? '—'}</span>}</RTd>
+              <RTd className="hidden xl:table-cell">
+                <StatusChip tone={e.kind === 'sell' ? 'bad' : 'ok'}>
+                  {e.kind === 'sell' ? 'SELL' : 'BUY'}
+                </StatusChip>
+              </RTd>
               <RTd><StatusChip tone="neutral">{fmtAgo(e.ts)} ago</StatusChip></RTd>
               <RTd right className="hidden sm:table-cell"><NumCell top={`#${fmtSlot(e.slot)}`} bottom={OUTCOME[e.outcome].label} /></RTd>
             </tr>
