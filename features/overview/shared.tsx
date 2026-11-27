@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Copy } from '@/components/icons';
 import { cx } from '@/components/ui';
+import { copyText } from '@/lib/clipboard';
 import { fmtAgo, shortKey } from '@/lib/format';
 import { useTerminal } from '@/lib/store';
 import type { LanderId, RevertBreakdown, Venue } from '@/lib/types';
@@ -109,8 +110,8 @@ export function TokenCell({ symbol, badge, sub, mint, ts, image }: { symbol: str
   const { toast } = useTerminal();
   const copyMint = async () => {
     if (!mint) return;
-    try { await navigator.clipboard.writeText(mint); toast(`Copied ${shortKey(mint, 4)}`, 'ok'); }
-    catch { toast('Copy failed', 'error'); }
+    const ok = await copyText(mint);
+    toast(ok ? `Copied ${shortKey(mint, 4)}` : 'Copy failed', ok ? 'ok' : 'error');
   };
   return (
     <div className="flex min-w-0 items-center gap-3.5">

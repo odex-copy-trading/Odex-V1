@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { ArrowUpRight, Copy, Layers, LoaderCircle, Radar, Recycle } from '@/components/icons';
 import { EmptyState, TableSkeleton, cx } from '@/components/ui';
 import { kolLabel, useTerminal } from '@/lib/store';
+import { copyText } from '@/lib/clipboard';
 import { fmtAgo, fmtClock, fmtCompact, fmtSlot, fmtSol, fmtUsd, tone } from '@/lib/format';
 import type { ClosedPosition, FeedEvent, Position, TerminalState } from '@/lib/types';
 import { LANDER_NAME, NumCell, PctChip, REVERT_META, RTd, RTh, RevertBar, StatusChip, TokenCell, VENUE_SHORT } from './shared';
@@ -78,8 +79,8 @@ export function ClosedTab({ rows, unit }: { rows: ClosedPosition[]; unit: 'USD' 
   if (!rows.length) return <EmptyState icon={Recycle} title="No closed positions in this period">Try a longer period.</EmptyState>;
   const copy = async (c: ClosedPosition) => {
     const pnl = c.proceedsSol - c.entrySol;
-    try { await navigator.clipboard.writeText(`$${c.symbol} ${c.exitReason} ${fmtSol(pnl, 4, true)} SOL (${((pnl / c.entrySol) * 100).toFixed(1)}%)`); toast('Row copied', 'ok'); }
-    catch { toast('Copy failed', 'error'); }
+    const ok = await copyText(`$${c.symbol} ${c.exitReason} ${fmtSol(pnl, 4, true)} SOL (${((pnl / c.entrySol) * 100).toFixed(1)}%)`);
+    toast(ok ? 'Row copied' : 'Copy failed', ok ? 'ok' : 'error');
   };
   return (
     <table className="w-full">

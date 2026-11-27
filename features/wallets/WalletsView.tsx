@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowUpRight, Copy, Download, Eye, Lock, Pencil, Plus, Power, Settings, Trash2, TriangleAlert, Wallet, Zap } from '@/components/icons';
 import { Button, Field, Input, Modal, PageHeader, Select, cx } from '@/components/ui';
+import { copyText } from '@/lib/clipboard';
 import { fmtSol, fmtUsd, shortKey } from '@/lib/format';
 import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
 import { useCustomWallets, type CustomWallet, type WalletAsset } from '@/lib/custom-wallets';
@@ -406,8 +407,8 @@ export function WalletsView() {
   const paperEquitySol = computePaperEquitySol(state, paperStartSol);
 
   const copyAddr = async (addr: string) => {
-    try { await navigator.clipboard.writeText(addr); toast('Address copied', 'ok'); }
-    catch { toast('Copy failed', 'error'); }
+    const ok = await copyText(addr);
+    toast(ok ? 'Address copied' : 'Copy failed', ok ? 'ok' : 'error');
   };
 
   const isVisible = (id: BuiltinId) => !hiddenBuiltins.includes(id);
@@ -744,8 +745,8 @@ export function WalletsView() {
                   variant="ghost"
                   icon={Copy}
                   onClick={async () => {
-                    try { await navigator.clipboard.writeText(genResult.secretKeyBase58); toast('Private key copied', 'ok'); }
-                    catch { toast('Copy failed', 'error'); }
+                    const ok = await copyText(genResult.secretKeyBase58);
+                    toast(ok ? 'Private key copied' : 'Copy failed', ok ? 'ok' : 'error');
                   }}
                 >
                   Copy

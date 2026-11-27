@@ -561,7 +561,7 @@ export function PnlCalendarButton({
                       ) : null}
                     </div>
                     <div
-                      style={{ fontFamily: 'var(--font-geist), sans-serif', fontSize: '14.11px', fontWeight: 400, fontStyle: 'normal' }}
+                      style={{ fontFamily: 'var(--font-inter), Inter, sans-serif', fontSize: '14.11px', fontWeight: 400, fontStyle: 'normal' }}
                       className={cx(
                         'my-auto text-center tracking-tight tabular-nums',
                         isBest

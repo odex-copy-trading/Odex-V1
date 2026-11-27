@@ -9,6 +9,7 @@ import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
 import { useCustomWallets } from '@/lib/custom-wallets';
 import { isPubkey } from '@/lib/pubkey';
 import { portfolioUsd, useCommand, useTerminal } from '@/lib/store';
+import { copyText } from '@/lib/clipboard';
 import { fmtAgo, fmtInt, fmtSlot, fmtSol, fmtUsd, shortKey } from '@/lib/format';
 import type { EngineStatus } from '@/lib/types';
 
@@ -201,8 +202,8 @@ function WalletPill() {
 
   const copyAddr = async (addr: string, label: string) => {
     if (!addr) return;
-    try { await navigator.clipboard.writeText(addr); toast(`${label} copied`, 'ok'); }
-    catch { toast('Copy failed', 'error'); }
+    const ok = await copyText(addr);
+    toast(ok ? `${label} copied` : 'Copy failed', ok ? 'ok' : 'error');
   };
 
   return (

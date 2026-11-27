@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { ArrowUpRight, Copy, Pencil, Plus, Search, Settings, Trash2, Users } from '@/components/icons';
 import { Badge, Button, Card, CardHeader, EmptyState, Field, Input, Modal, PageHeader, Select, TableSkeleton, Td, Th, Toggle, cx } from '@/components/ui';
 import { useCommand, useTerminal } from '@/lib/store';
+import { copyText } from '@/lib/clipboard';
 import { fmtSlot, fmtSol, shortKey, tone } from '@/lib/format';
 import { isPubkey } from '@/lib/pubkey';
 import type { CopyMode, Kol, QuoteAsset } from '@/lib/types';
@@ -169,7 +170,7 @@ export function WatchlistView() {
     return state.kols.filter((k) => !s || k.label.toLowerCase().includes(s) || k.pubkey.toLowerCase().includes(s));
   }, [state.kols, q]);
 
-  const copy = async (v: string) => { try { await navigator.clipboard.writeText(v); toast('Address copied', 'ok'); } catch { toast('Copy failed', 'error'); } };
+  const copy = async (v: string) => { const ok = await copyText(v); toast(ok ? 'Address copied' : 'Copy failed', ok ? 'ok' : 'error'); };
   const toDraft = (k: Kol): Draft => ({
     id: k.id, label: k.label, pubkey: k.pubkey, quote: k.quote,
     triggerMargin: String(k.triggerMargin), buySizeSol: String(k.buySizeSol), maxCurveReserveSol: String(k.maxCurveReserveSol),

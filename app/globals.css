@@ -14,15 +14,15 @@
   --color-muted: #8e8e97; /* 5.9:1 on panel: AA for body text */
   --color-accent: #8b8fff;
 
-  --font-sans: Inter, "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: var(--font-inter), Inter, "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-inter), Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
 
   --radius-card: 1.125rem;
 }
 
-/* Numbers: SOL, USDC, slots, CU, latency. Always monospace + tabular. */
+/* Numbers: SOL, USDC, slots, CU, latency. Inter + tabular numerals. */
 @utility num {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
 }
