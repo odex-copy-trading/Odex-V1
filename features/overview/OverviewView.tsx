@@ -450,7 +450,7 @@ export function OverviewView() {
               </div>
             ) : (
               <ol className="flex-1 space-y-2 overflow-y-auto pr-0.5">
-                {signalsP.slice(0, 30).map((e) => (
+                {signalsP.slice(0, 12).map((e) => (
                   <li
                     key={e.id}
                     onClick={() => { setTab('signals'); if (e.kolId) setKolFilter(e.kolId); }}
