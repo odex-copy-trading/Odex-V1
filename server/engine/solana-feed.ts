@@ -150,6 +150,8 @@ const DEX_PROGRAM_VENUES: Array<[string, FeedEvent['venue']]> = [
   ['CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C', 'Raydium CPMM'],
   ['LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', 'Raydium CPMM'],
   ['JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', 'Raydium CPMM'],
+  ['cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG', 'Raydium CPMM'],
+  ['dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN', 'Raydium LaunchLab'],
 ];
 
 function detectVenueFromLogs(logs: string[]): FeedEvent['venue'] | null {
@@ -210,6 +212,7 @@ export class SolanaLiveFeed {
   private seenPumpCreateSigs = new Set<string>();
   private nextRpcSubReqId = 100;
   private seenKolSigs = new Set<string>();
+  private seenRpcKolSigs = new Set<string>();
   private creatorLaunches = new Map<string, number[]>();
   private ruggedCreators = new Set<string>();
   private liveCreators = new Map<string, string>();
@@ -373,8 +376,12 @@ export class SolanaLiveFeed {
         if (!kolPubkey) return;
         const venue = detectVenueFromLogs(logs);
         if (!venue) return;
-        if (this.seenKolSigs.has(val.signature)) return;
-        this.markKolSigSeen(val.signature);
+        if (this.seenRpcKolSigs.has(val.signature)) return;
+        this.seenRpcKolSigs.add(val.signature);
+        if (this.seenRpcKolSigs.size > 1000) {
+          const first = this.seenRpcKolSigs.values().next().value;
+          if (first) this.seenRpcKolSigs.delete(first);
+        }
         void this.inspectKolRpcTransaction(kolPubkey, val.signature, slot, venue);
       }
     });
