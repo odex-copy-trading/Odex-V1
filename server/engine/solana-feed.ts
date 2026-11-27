@@ -1535,17 +1535,16 @@ export class SolanaLiveFeed {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 1500);
-      const r = await fetch(this.endpoints.httpUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getMultipleAccounts',
-          params: [targets.map((x) => x.curve), { encoding: 'base64', commitment: 'processed' }],
-        }),
-        signal: ctrl.signal,
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getMultipleAccounts',
+        params: [targets.map((x) => x.curve), { encoding: 'base64', commitment: 'processed' }],
       });
+      let r = await fetch(this.endpoints.httpUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: ctrl.signal });
+      if (!r.ok && this.endpoints.httpUrl !== PUBLIC_SOLANA_HTTP) {
+        r = await fetch(PUBLIC_SOLANA_HTTP, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: ctrl.signal });
+      }
       clearTimeout(t);
       if (!r.ok) return;
       const json = (await r.json()) as { result?: { value?: ({ data?: [string, string] } | null)[] } };
@@ -1629,17 +1628,34 @@ export class SolanaLiveFeed {
       clearTimeout(t);
       if (!r.ok) return;
       const data = (await r.json()) as {
-        pairs?: { chainId?: string; baseToken?: { address?: string }; priceNative?: string; liquidity?: { quote?: number; usd?: number } }[];
+        pairs?: {
+          chainId?: string;
+          baseToken?: { address?: string };
+          quoteToken?: { address?: string; symbol?: string };
+          priceNative?: string;
+          priceUsd?: string;
+          liquidity?: { quote?: number; usd?: number };
+        }[];
       };
       if (!Array.isArray(data.pairs)) return;
-      const bestByMint = new Map<string, { price: number; quoteLiq?: number }>();
+      const wanted = new Set(fallbackMints);
+      const bestByMint = new Map<string, { price: number; quoteLiq?: number; liqUsd: number }>();
       for (const pair of data.pairs) {
         if (pair.chainId && pair.chainId !== 'solana') continue;
-        if (pair.liquidity?.usd != null && pair.liquidity.usd < 1000) continue; // ignore spoofed micro-liquidity pools
         const mint = pair.baseToken?.address;
-        const price = Number(pair.priceNative);
-        if (!mint || !Number.isFinite(price) || price <= 0) continue;
-        if (!bestByMint.has(mint)) bestByMint.set(mint, { price, quoteLiq: pair.liquidity?.quote });
+        if (!mint || !wanted.has(mint)) continue;
+        const liqUsd = pair.liquidity?.usd ?? 0;
+        if (pair.liquidity?.usd != null && liqUsd < 500) continue;
+        const isSolQuote = pair.quoteToken?.address === 'So11111111111111111111111111111111111111112' || pair.quoteToken?.symbol === 'SOL' || pair.quoteToken?.symbol === 'WSOL';
+        let price = isSolQuote ? Number(pair.priceNative) : NaN;
+        if ((!Number.isFinite(price) || price <= 0) && pair.priceUsd && this.solUsd > 0) {
+          price = Number(pair.priceUsd) / this.solUsd;
+        }
+        if (!Number.isFinite(price) || price <= 0) continue;
+        const prev = bestByMint.get(mint);
+        if (!prev || liqUsd > prev.liqUsd) {
+          bestByMint.set(mint, { price, quoteLiq: isSolQuote ? pair.liquidity?.quote : undefined, liqUsd });
+        }
       }
       let anyChanged = false;
       for (const [mint, info] of bestByMint) {
