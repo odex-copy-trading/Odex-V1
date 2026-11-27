@@ -499,6 +499,23 @@ export class SolanaLiveFeed {
         }
       }
 
+      // 1d. Live KOL Sell signal feed (always stream tracked trader sells into Live signals)
+      if (msg.txType === 'sell' && msg.traderPublicKey && this.watchedKolKeys.has(msg.traderPublicKey)) {
+        const sellKol = this.cp.snapshot().kols.find((k) => k.enabled && k.pubkey === msg.traderPublicKey);
+        if (sellKol) {
+          this.emitKolSellSignal({
+            kol: sellKol,
+            mint: msg.mint,
+            signature: msg.signature,
+            slot: this.cp.currentSlot() || this.lastSlot,
+            venue: msg.pool === 'raydium' ? 'Raydium LaunchLab' : 'Pump.fun',
+            symbol: msg.symbol,
+            solReceived: typeof msg.solAmount === 'number' && Number.isFinite(msg.solAmount) ? msg.solAmount : 0,
+          });
+        }
+        return;
+      }
+
       // 2. Live KOL Copy-Trade detection (same-slot copy using KOL's exact buySizeSol & maxCurveReserveSol).
       if (msg.txType === 'buy' && msg.traderPublicKey && this.watchedKolKeys.has(msg.traderPublicKey)) {
         this.onKolBuySignal(msg, ws);
@@ -1281,6 +1298,17 @@ export class SolanaLiveFeed {
                 this.cp.dispatchLiveMirrorSell(mint, kolForExit.label);
               }
             }
+            if (kolForExit.enabled) {
+              const solReceived = Math.max(0, (postLamports - preLamports) / 1e9 + Math.max(0, -wsolDelta));
+              this.emitKolSellSignal({
+                kol: kolForExit,
+                mint,
+                signature,
+                slot,
+                venue,
+                solReceived,
+              });
+            }
           }
         }
       }
@@ -1332,6 +1360,45 @@ export class SolanaLiveFeed {
         this.pumpWs ?? undefined,
       );
     } catch { /* ignore transient RPC fetch error */ }
+  }
+
+  private emitKolSellSignal(p: {
+    kol: { id: string; label: string };
+    mint: string;
+    signature?: string;
+    slot: number;
+    venue: FeedEvent['venue'];
+    symbol?: string;
+    solReceived?: number;
+  }) {
+    if (p.signature) {
+      const sigKey = `sell:${p.signature}`;
+      if (this.seenKolSigs.has(sigKey)) return;
+      this.markKolSigSeen(sigKey);
+    }
+    const ts = Date.now();
+    const snap = this.cp.snapshot();
+    const known = this.paper.get(p.mint)?.pos.symbol || snap.positions.find((x) => x.mint === p.mint)?.symbol || snap.feed.find((x) => x.mint === p.mint)?.symbol;
+    const symbol = (p.symbol || known || p.mint.slice(0, 4)).trim().slice(0, 16);
+    const sizeSol = typeof p.solReceived === 'number' && Number.isFinite(p.solReceived) ? +p.solReceived.toFixed(4) : 0;
+    const ev: FeedEvent = {
+      id: `kolsell_${(p.signature || p.mint).slice(0, 16)}`,
+      ts,
+      slot: p.slot,
+      kind: 'sell',
+      kolId: p.kol.id,
+      mint: p.mint,
+      symbol,
+      venue: p.venue,
+      sizeSol,
+      fanout: 0,
+      winner: null,
+      cuUsed: 0,
+      reverts: ZERO_REVERTS,
+      outcome: 'sold',
+      note: `${p.kol.label} sold${sizeSol > 0 ? ` ? ${sizeSol.toFixed(2)} SOL` : ''}`,
+    };
+    this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, p.signature ?? null);
   }
 
   private onKolBuySignal(

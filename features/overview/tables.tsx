@@ -154,7 +154,7 @@ export function SignalsTab({ rows }: { rows: FeedEvent[] }) {
               <RTd className="hidden lg:table-cell"><div className="text-[0.95rem]">{e.winner ? <Link href="/execution" className="hover:text-accent hover:underline">{LANDER_NAME[e.winner]}</Link> : <span className="text-muted">—</span>}</div><div className="text-[0.88rem] text-muted">{e.fanout ? `${rev} reverted` : ''}</div></RTd>
               <RTd className="hidden xl:table-cell">{e.fanout && e.kind !== 'sell' ? <div className="w-40"><RevertBar r={e.reverts} total={e.fanout} /><div className="mt-1.5 truncate text-[0.75rem] text-muted tabular-nums">{REVERT_META.filter((m) => e.reverts[m.key]).map((m) => `${m.short} ${e.reverts[m.key]}`).join(' · ') || 'none'}</div></div> : <span className="text-[0.88rem] text-muted">{e.note ?? '—'}</span>}</RTd>
               <RTd><StatusChip tone={OUTCOME[e.outcome].tone}>{OUTCOME[e.outcome].label}</StatusChip></RTd>
-              <RTd right className="hidden sm:table-cell"><NumCell top={`#${fmtSlot(e.slot)}`} bottom={fmtClock(e.ts)} /></RTd>
+              <RTd right className="hidden sm:table-cell"><NumCell top={`#${fmtSlot(e.slot)}`} bottom={`${fmtAgo(e.ts)} ago`} /></RTd>
             </tr>
           );
         })}

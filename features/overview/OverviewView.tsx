@@ -8,7 +8,7 @@ import { computePaperEquitySol, usePaperBalance } from '@/lib/paper';
 import { useCustomWallets } from '@/lib/custom-wallets';
 import { usePhantom } from '@/lib/phantom';
 import { kolLabel, portfolioUsd, useCommand, useTerminal } from '@/lib/store';
-import { fmtClock, fmtSol, fmtUsd, tone } from '@/lib/format';
+import { fmtAgo, fmtSol, fmtUsd, tone } from '@/lib/format';
 import type { FeedEvent } from '@/lib/types';
 import { DateRangePicker, PnlCalendarButton, rangeForPreset, type DateRangeValue } from './DateAndPnlCalendar';
 import { ClosedTab, PositionsTab, SignalsTab, TableSkeleton } from './tables';
@@ -95,8 +95,14 @@ export function OverviewView() {
   const [dateRange, setDateRange] = useState<DateRangeValue>(() => rangeForPreset('today'));
   const [unit, setUnit] = useState<'USD' | 'SOL'>('USD');
   const [frozen, setFrozen] = useState<FeedEvent[] | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const loading = state.connection === 'connecting';
   const px = state.balances.solUsd;
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 5_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   // Deep-link support: /?tab=positions|closed|signals&kol=<kolId>
   useEffect(() => {
@@ -454,7 +460,7 @@ export function OverviewView() {
                       <div className="flex items-center gap-1.5">
                         <span className={cx(
                           'shrink-0 rounded px-1.5 py-0.5 text-[0.64rem] font-bold uppercase tracking-wide',
-                          e.kind === 'sell' ? 'bg-rose-500/15 text-rose-300' : 'bg-accent/15 text-accent',
+                          e.kind === 'sell' ? 'bg-rose-500/15 text-rose-400' : 'bg-emerald-500/15 text-emerald-400',
                         )}>
                           {e.kind === 'sell' ? 'SELL' : 'BUY'}
                         </span>
@@ -464,11 +470,11 @@ export function OverviewView() {
                         </Link>
                       </div>
                       <div className="mt-1 flex items-center gap-1.5 text-[0.72rem] tabular-nums text-muted">
-                        <span>{fmtSol(e.sizeSol, 2)} SOL</span>
+                        <span>{e.sizeSol > 0 ? `${fmtSol(e.sizeSol, 2)} SOL` : '—'}</span>
                         <span>·</span>
                         <span className="truncate">{e.venue}</span>
                         <span>·</span>
-                        <span>{fmtClock(e.ts)}</span>
+                        <span>{fmtAgo(e.ts, nowTick)} ago</span>
                       </div>
                     </div>
                     <span className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[0.68rem] font-semibold uppercase text-fg2">{e.outcome}</span>
