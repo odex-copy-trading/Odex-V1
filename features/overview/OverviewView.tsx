@@ -473,11 +473,11 @@ export function OverviewView() {
                         <span>{e.sizeSol > 0 ? `${fmtSol(e.sizeSol, 2)} SOL` : '—'}</span>
                         <span>·</span>
                         <span className="truncate">{e.venue}</span>
-                        <span>·</span>
-                        <span>{fmtAgo(e.ts, nowTick)} ago</span>
                       </div>
                     </div>
-                    <span className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[0.68rem] font-semibold uppercase text-fg2">{e.outcome}</span>
+                    <span className="shrink-0 whitespace-nowrap rounded bg-raised px-2 py-0.5 text-[0.7rem] font-medium tabular-nums text-fg2">
+                      {fmtAgo(e.ts, nowTick)} ago
+                    </span>
                   </li>
                 ))}
               </ol>

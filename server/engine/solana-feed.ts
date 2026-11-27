@@ -1396,7 +1396,7 @@ export class SolanaLiveFeed {
       cuUsed: 0,
       reverts: ZERO_REVERTS,
       outcome: 'sold',
-      note: `${p.kol.label} sold${sizeSol > 0 ? ` ? ${sizeSol.toFixed(2)} SOL` : ''}`,
+      note: `${p.kol.label} sold${sizeSol > 0 ? ` \u00b7 ${sizeSol.toFixed(2)} SOL` : ''}`,
     };
     this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, p.signature ?? null);
   }
