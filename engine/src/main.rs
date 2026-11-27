@@ -389,6 +389,10 @@ fn apply_kol_upsert(cmd: &Value, watchlist: &WatchlistCache) -> Result<(), Strin
     let trigger_margin = k.get("triggerMargin").and_then(|v| v.as_f64()).unwrap_or(0.02);
     let buy_size_sol = k.get("buySizeSol").and_then(|v| v.as_f64()).unwrap_or(1.0);
     let max_curve = k.get("maxCurveReserveSol").and_then(|v| v.as_f64()).unwrap_or(85.0);
+    let min_kol_buy = k.get("minKolBuySol").and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0);
+    let max_kol_buy = k.get("maxKolBuySol").and_then(|v| v.as_f64()).unwrap_or(0.0).max(0.0);
+    let copy_proportional = k.get("copyMode").and_then(|v| v.as_str()).map(|s| s == "proportional").unwrap_or(false);
+    let copy_pct = k.get("copyPct").and_then(|v| v.as_f64()).unwrap_or(100.0).clamp(1.0, 500.0);
     let enabled = k.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
 
     watchlist.upsert(KolRule {
@@ -400,6 +404,10 @@ fn apply_kol_upsert(cmd: &Value, watchlist: &WatchlistCache) -> Result<(), Strin
         margin_lamports: (trigger_margin * scale).max(1.0) as u64,
         buy_size_lamports: (buy_size_sol * 1_000_000_000.0) as u64,
         max_curve_reserve_lamports: (max_curve * 1_000_000_000.0) as u64,
+        min_kol_buy_lamports: (min_kol_buy * 1_000_000_000.0) as u64,
+        max_kol_buy_lamports: (max_kol_buy * 1_000_000_000.0) as u64,
+        copy_proportional,
+        copy_pct,
         enabled,
     });
     if enabled {

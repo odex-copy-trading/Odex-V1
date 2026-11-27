@@ -93,6 +93,8 @@ export interface KolStats {
   lastSeenSlot: number | null;
 }
 
+export type CopyMode = 'fixed' | 'proportional';
+
 export interface Kol {
   id: string;
   label: string;
@@ -101,6 +103,10 @@ export interface Kol {
   triggerMargin: number; // in quote units
   buySizeSol: number;
   maxCurveReserveSol: number;
+  minKolBuySol?: number; // skip trader buys smaller than this (e.g. 0.025 / 0.2 SOL chart bumps)
+  maxKolBuySol?: number | null; // optional upper cap on trader buy size
+  copyMode?: CopyMode; // 'fixed' = fixed buySizeSol, 'proportional' = copyPct% of trader buy
+  copyPct?: number; // 1..500% when copyMode === 'proportional'
   enabled: boolean;
   stats: KolStats;
 }

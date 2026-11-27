@@ -7,7 +7,7 @@ import { Badge, Button, Card, CardHeader, EmptyState, Field, Input, Modal, PageH
 import { useCommand, useTerminal } from '@/lib/store';
 import { fmtSlot, fmtSol, shortKey, tone } from '@/lib/format';
 import { isPubkey } from '@/lib/pubkey';
-import type { Kol, QuoteAsset } from '@/lib/types';
+import type { CopyMode, Kol, QuoteAsset } from '@/lib/types';
 
 const QUOTES: QuoteAsset[] = ['SOL', 'WSOL', 'USDC', 'BONK'];
 const MARGIN_HINT: Record<QuoteAsset, string> = {
@@ -17,8 +17,33 @@ const MARGIN_HINT: Record<QuoteAsset, string> = {
   BONK: 'Trigger on a BONK account balance drop larger than this (BONK).',
 };
 
-type Draft = { id?: string; label: string; pubkey: string; quote: QuoteAsset; triggerMargin: string; buySizeSol: string; maxCurveReserveSol: string; enabled: boolean };
-const blank: Draft = { label: '', pubkey: '', quote: 'SOL', triggerMargin: '0.02', buySizeSol: '2', maxCurveReserveSol: '60', enabled: true };
+type Draft = {
+  id?: string;
+  label: string;
+  pubkey: string;
+  quote: QuoteAsset;
+  triggerMargin: string;
+  buySizeSol: string;
+  maxCurveReserveSol: string;
+  minKolBuySol: string;
+  maxKolBuySol: string;
+  copyMode: CopyMode;
+  copyPct: string;
+  enabled: boolean;
+};
+const blank: Draft = {
+  label: '',
+  pubkey: '',
+  quote: 'SOL',
+  triggerMargin: '0.02',
+  buySizeSol: '2',
+  maxCurveReserveSol: '60',
+  minKolBuySol: '',
+  maxKolBuySol: '',
+  copyMode: 'fixed',
+  copyPct: '100',
+  enabled: true,
+};
 
 function validate(d: Draft, kols: Kol[]) {
   const e: Partial<Record<keyof Draft, string>> = {};
@@ -30,6 +55,12 @@ function validate(d: Draft, kols: Kol[]) {
   if (!(n(d.triggerMargin) > 0)) e.triggerMargin = 'Must be greater than 0.';
   if (!(n(d.buySizeSol) >= 0.01 && n(d.buySizeSol) <= 100)) e.buySizeSol = 'Between 0.01 and 100 SOL.';
   if (!(n(d.maxCurveReserveSol) > 0)) e.maxCurveReserveSol = 'Must be greater than 0.';
+  if (d.minKolBuySol.trim() !== '' && !(n(d.minKolBuySol) >= 0 && n(d.minKolBuySol) <= 10_000)) e.minKolBuySol = '0 to 10,000 SOL.';
+  if (d.maxKolBuySol.trim() !== '') {
+    if (!(n(d.maxKolBuySol) > 0 && n(d.maxKolBuySol) <= 10_000)) e.maxKolBuySol = 'Must be > 0.';
+    else if (d.minKolBuySol.trim() !== '' && n(d.maxKolBuySol) < n(d.minKolBuySol)) e.maxKolBuySol = 'Max must be ≥ min.';
+  }
+  if (d.copyMode === 'proportional' && !(n(d.copyPct) >= 1 && n(d.copyPct) <= 500)) e.copyPct = 'Between 1% and 500%.';
   return e;
 }
 
@@ -45,9 +76,13 @@ function KolModal({ draft, onClose }: { draft: Draft | null; onClose: () => void
   const save = async () => {
     setTouched(true);
     if (Object.keys(errors).length) return;
+    const minKol = d.minKolBuySol.trim() === '' ? 0 : Number(d.minKolBuySol);
+    const maxKol = d.maxKolBuySol.trim() === '' ? null : Number(d.maxKolBuySol);
     const ok = await run({ type: 'kol.upsert', kol: {
       id: d.id ?? `kol_${Date.now().toString(36)}`, label: d.label.trim(), pubkey: d.pubkey.trim(), quote: d.quote,
-      triggerMargin: Number(d.triggerMargin), buySizeSol: Number(d.buySizeSol), maxCurveReserveSol: Number(d.maxCurveReserveSol), enabled: d.enabled,
+      triggerMargin: Number(d.triggerMargin), buySizeSol: Number(d.buySizeSol), maxCurveReserveSol: Number(d.maxCurveReserveSol),
+      minKolBuySol: minKol, maxKolBuySol: maxKol, copyMode: d.copyMode, copyPct: Number(d.copyPct) || 100,
+      enabled: d.enabled,
     } }, d.id ? 'Wallet updated' : 'Wallet added to watchlist');
     if (ok) onClose();
   };
@@ -62,12 +97,34 @@ function KolModal({ draft, onClose }: { draft: Draft | null; onClose: () => void
         <Field label="Wallet public key" htmlFor="k-pub" error={err('pubkey')} hint="Public address only. Never paste a private key or seed phrase.">
           <Input id="k-pub" className="num" value={d.pubkey} autoComplete="off" spellCheck={false} invalid={!!err('pubkey')} onChange={(e) => set('pubkey', e.target.value)} />
         </Field>
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Min trader buy (SOL)" htmlFor="k-min-kol" error={err('minKolBuySol')} hint="Skip small chart top-ups (e.g. 0.025 / 0.2 SOL). Blank = any.">
+            <Input id="k-min-kol" className="num" inputMode="decimal" placeholder="e.g. 1" value={d.minKolBuySol} invalid={!!err('minKolBuySol')} onChange={(e) => set('minKolBuySol', e.target.value)} />
+          </Field>
+          <Field label="Max trader buy (SOL)" htmlFor="k-max-kol" error={err('maxKolBuySol')} hint="Optional upper cap (e.g. 2 SOL). Blank = no max.">
+            <Input id="k-max-kol" className="num" inputMode="decimal" placeholder="No max" value={d.maxKolBuySol} invalid={!!err('maxKolBuySol')} onChange={(e) => set('maxKolBuySol', e.target.value)} />
+          </Field>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Copy sizing mode" htmlFor="k-copy-mode">
+            <Select id="k-copy-mode" value={d.copyMode} onChange={(e) => set('copyMode', e.target.value as CopyMode)}>
+              <option value="fixed">Fixed SOL amount</option>
+              <option value="proportional">Proportional (% of trader buy)</option>
+            </Select>
+          </Field>
+          {d.copyMode === 'proportional' ? (
+            <Field label="Copy % of trader buy" htmlFor="k-copy-pct" error={err('copyPct')} hint="Clamped to your Settings min/max buy size.">
+              <Input id="k-copy-pct" className="num" inputMode="decimal" placeholder="50" value={d.copyPct} invalid={!!err('copyPct')} onChange={(e) => set('copyPct', e.target.value)} />
+            </Field>
+          ) : (
+            <Field label="Buy size (SOL)" htmlFor="k-size" error={err('buySizeSol')}>
+              <Input id="k-size" className="num" inputMode="decimal" value={d.buySizeSol} invalid={!!err('buySizeSol')} onChange={(e) => set('buySizeSol', e.target.value)} />
+            </Field>
+          )}
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
           <Field label={`Trigger margin (${d.quote})`} htmlFor="k-margin" error={err('triggerMargin')} hint={MARGIN_HINT[d.quote]}>
             <Input id="k-margin" className="num" inputMode="decimal" value={d.triggerMargin} invalid={!!err('triggerMargin')} onChange={(e) => set('triggerMargin', e.target.value)} />
-          </Field>
-          <Field label="Buy size (SOL)" htmlFor="k-size" error={err('buySizeSol')}>
-            <Input id="k-size" className="num" inputMode="decimal" value={d.buySizeSol} invalid={!!err('buySizeSol')} onChange={(e) => set('buySizeSol', e.target.value)} />
           </Field>
           <Field label="Max curve reserve (SOL)" htmlFor="k-curve" error={err('maxCurveReserveSol')} hint="Skip if the pool already holds more than this.">
             <Input id="k-curve" className="num" inputMode="decimal" value={d.maxCurveReserveSol} invalid={!!err('maxCurveReserveSol')} onChange={(e) => set('maxCurveReserveSol', e.target.value)} />
@@ -113,7 +170,15 @@ export function WatchlistView() {
   }, [state.kols, q]);
 
   const copy = async (v: string) => { try { await navigator.clipboard.writeText(v); toast('Address copied', 'ok'); } catch { toast('Copy failed', 'error'); } };
-  const toDraft = (k: Kol): Draft => ({ id: k.id, label: k.label, pubkey: k.pubkey, quote: k.quote, triggerMargin: String(k.triggerMargin), buySizeSol: String(k.buySizeSol), maxCurveReserveSol: String(k.maxCurveReserveSol), enabled: k.enabled });
+  const toDraft = (k: Kol): Draft => ({
+    id: k.id, label: k.label, pubkey: k.pubkey, quote: k.quote,
+    triggerMargin: String(k.triggerMargin), buySizeSol: String(k.buySizeSol), maxCurveReserveSol: String(k.maxCurveReserveSol),
+    minKolBuySol: k.minKolBuySol && k.minKolBuySol > 0 ? String(k.minKolBuySol) : '',
+    maxKolBuySol: k.maxKolBuySol != null && k.maxKolBuySol > 0 ? String(k.maxKolBuySol) : '',
+    copyMode: k.copyMode ?? 'fixed',
+    copyPct: String(k.copyPct ?? 100),
+    enabled: k.enabled,
+  });
 
   return (
     <>
@@ -136,11 +201,14 @@ export function WatchlistView() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[66rem] text-[0.9rem] [&_th]:px-5 [&_th]:py-3.5 [&_th]:text-[0.76rem] [&_td]:px-5 [&_td]:py-4">
-              <thead><tr><Th>On</Th><Th>Wallet</Th><Th>Quote</Th><Th right>Trigger margin</Th><Th right>Buy size</Th><Th right>Max curve</Th><Th right>Win rate</Th><Th right>Realized PnL</Th><Th right>Last seen</Th><Th right><span className="sr-only">Actions</span></Th></tr></thead>
+              <thead><tr><Th>On</Th><Th>Wallet</Th><Th>Quote</Th><Th right>Trader size</Th><Th right>Copy size</Th><Th right>Max curve</Th><Th right>Win rate</Th><Th right>Realized PnL</Th><Th right>Last seen</Th><Th right><span className="sr-only">Actions</span></Th></tr></thead>
               <tbody>
                 {rows.map((k) => {
                   const n = k.stats.wins + k.stats.losses;
                   const wr = n ? (k.stats.wins / n) * 100 : null;
+                  const minK = k.minKolBuySol ?? 0;
+                  const maxK = k.maxKolBuySol ?? null;
+                  const rangeLabel = minK > 0 && maxK != null ? `${minK}–${maxK}` : minK > 0 ? `≥ ${minK}` : maxK != null ? `≤ ${maxK}` : 'Any';
                   return (
                     <tr key={k.id} id={k.id} className={cx('hover:bg-card', !k.enabled && 'opacity-60', focusId === k.id && 'flash-in bg-accent/10')}>
                       <Td><Toggle checked={k.enabled} label={`${k.enabled ? 'Disable' : 'Enable'} ${k.label}`} onChange={(v) => run({ type: 'kol.toggle', id: k.id, enabled: v }, `${k.label} ${v ? 'enabled' : 'disabled'}`)} /></Td>
@@ -152,8 +220,12 @@ export function WatchlistView() {
                         </div>
                       </Td>
                       <Td><Badge mono>{k.quote}</Badge></Td>
-                      <Td right mono>{k.quote === 'BONK' ? k.triggerMargin.toLocaleString('en-US') : k.triggerMargin} <span className="text-muted">{k.quote}</span></Td>
-                      <Td right mono>{k.buySizeSol.toFixed(2)} <span className="text-muted">SOL</span></Td>
+                      <Td right mono>{rangeLabel}{rangeLabel !== 'Any' && <span className="text-muted"> SOL</span>}</Td>
+                      <Td right mono>
+                        {k.copyMode === 'proportional'
+                          ? <>{k.copyPct ?? 100}% <span className="text-muted">prop</span></>
+                          : <>{k.buySizeSol.toFixed(2)} <span className="text-muted">SOL</span></>}
+                      </Td>
                       <Td right mono>{k.maxCurveReserveSol} <span className="text-muted">SOL</span></Td>
                       <Td right mono>
                         <Link href={`/?tab=closed&kol=${encodeURIComponent(k.id)}`} className="hover:text-accent hover:underline" title={`View ${k.label} trades on Overview`}>

@@ -69,6 +69,14 @@ pub struct KolRule {
     pub margin_lamports: u64,
     pub buy_size_lamports: u64,
     pub max_curve_reserve_lamports: u64,
+    #[serde(default)]
+    pub min_kol_buy_lamports: u64,
+    #[serde(default)]
+    pub max_kol_buy_lamports: u64,
+    #[serde(default)]
+    pub copy_proportional: bool,
+    #[serde(default)]
+    pub copy_pct: f64,
     pub enabled: bool,
 }
 

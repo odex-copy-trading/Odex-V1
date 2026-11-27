@@ -131,6 +131,10 @@ fn replays_mainnet_kol_buy_burst_and_verifies_all_four_invariants() {
         margin_lamports: 20_000_000, // 0.02 SOL
         buy_size_lamports: 2 * LAMPORTS_PER_SOL,
         max_curve_reserve_lamports: 85 * LAMPORTS_PER_SOL,
+        min_kol_buy_lamports: 0,
+        max_kol_buy_lamports: 0,
+        copy_proportional: false,
+        copy_pct: 100.0,
         enabled: true,
     });
     balances.set(kol_pk, 10 * LAMPORTS_PER_SOL);

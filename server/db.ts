@@ -58,6 +58,14 @@ export class Db {
     for (const col of ['buy_slot INTEGER', 'slot_delta INTEGER']) {
       try { this.raw.exec(`ALTER TABLE closed_positions ADD COLUMN ${col};`); } catch { /* already exists */ }
     }
+    for (const col of [
+      'min_kol_buy_sol REAL NOT NULL DEFAULT 0',
+      'max_kol_buy_sol REAL',
+      "copy_mode TEXT NOT NULL DEFAULT 'fixed'",
+      'copy_pct REAL NOT NULL DEFAULT 100',
+    ]) {
+      try { this.raw.exec(`ALTER TABLE kols ADD COLUMN ${col};`); } catch { /* already exists */ }
+    }
   }
   close() { this.raw.close(); }
   tx<T>(fn: () => T): T {
@@ -82,19 +90,27 @@ export class Db {
   listKols(): Kol[] {
     return (this.raw.prepare('SELECT * FROM kols ORDER BY created_at').all() as Row[]).map((r) => ({
       id: String(r.id), label: String(r.label), pubkey: String(r.pubkey), quote: r.quote as Kol['quote'], triggerMargin: Number(r.trigger_margin),
-      buySizeSol: Number(r.buy_size_sol), maxCurveReserveSol: Number(r.max_curve_reserve_sol), enabled: !!r.enabled,
+      buySizeSol: Number(r.buy_size_sol), maxCurveReserveSol: Number(r.max_curve_reserve_sol),
+      minKolBuySol: r.min_kol_buy_sol == null ? 0 : Number(r.min_kol_buy_sol),
+      maxKolBuySol: r.max_kol_buy_sol == null ? null : Number(r.max_kol_buy_sol),
+      copyMode: r.copy_mode === 'proportional' ? 'proportional' : 'fixed',
+      copyPct: r.copy_pct == null ? 100 : Number(r.copy_pct),
+      enabled: !!r.enabled,
       stats: { wins: Number(r.wins), losses: Number(r.losses), realizedSol: Number(r.realized_sol), lastSeenSlot: r.last_seen_slot == null ? null : Number(r.last_seen_slot) },
     }));
   }
   getKol(id: string) { return this.listKols().find((k) => k.id === id) ?? null; }
   upsertKol(k: Kol) {
     const now = Date.now();
-    this.raw.prepare(`INSERT INTO kols (id, label, pubkey, quote, trigger_margin, buy_size_sol, max_curve_reserve_sol, enabled, wins, losses, realized_sol, last_seen_slot, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    this.raw.prepare(`INSERT INTO kols (id, label, pubkey, quote, trigger_margin, buy_size_sol, max_curve_reserve_sol, min_kol_buy_sol, max_kol_buy_sol, copy_mode, copy_pct, enabled, wins, losses, realized_sol, last_seen_slot, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET label=excluded.label, pubkey=excluded.pubkey, quote=excluded.quote, trigger_margin=excluded.trigger_margin,
-        buy_size_sol=excluded.buy_size_sol, max_curve_reserve_sol=excluded.max_curve_reserve_sol, enabled=excluded.enabled, updated_at=excluded.updated_at`)
-      .run(k.id, k.label, k.pubkey, k.quote, k.triggerMargin, k.buySizeSol, k.maxCurveReserveSol, k.enabled ? 1 : 0,
-        k.stats.wins, k.stats.losses, k.stats.realizedSol, k.stats.lastSeenSlot, now, now);
+        buy_size_sol=excluded.buy_size_sol, max_curve_reserve_sol=excluded.max_curve_reserve_sol,
+        min_kol_buy_sol=excluded.min_kol_buy_sol, max_kol_buy_sol=excluded.max_kol_buy_sol,
+        copy_mode=excluded.copy_mode, copy_pct=excluded.copy_pct, enabled=excluded.enabled, updated_at=excluded.updated_at`)
+      .run(k.id, k.label, k.pubkey, k.quote, k.triggerMargin, k.buySizeSol, k.maxCurveReserveSol,
+        k.minKolBuySol ?? 0, k.maxKolBuySol ?? null, k.copyMode ?? 'fixed', k.copyPct ?? 100,
+        k.enabled ? 1 : 0, k.stats.wins, k.stats.losses, k.stats.realizedSol, k.stats.lastSeenSlot, now, now);
   }
   updateKolStats(k: Kol) {
     this.raw.prepare('UPDATE kols SET wins=?, losses=?, realized_sol=?, last_seen_slot=? WHERE id=?')

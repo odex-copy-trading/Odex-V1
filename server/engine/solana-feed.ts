@@ -1362,6 +1362,22 @@ export class SolanaLiveFeed {
     if (!kol) return;
     if (msg.vSolInBondingCurve && msg.vSolInBondingCurve > kol.maxCurveReserveSol) return;
 
+    // Per-trader buy-size filter (skips small chart bumps/top-ups like 0.025 or 0.2 SOL) + Fixed/Proportional sizing.
+    const traderSol = typeof msg.solAmount === 'number' && Number.isFinite(msg.solAmount) ? msg.solAmount : null;
+    const minKol = kol.minKolBuySol ?? 0;
+    const maxKol = kol.maxKolBuySol ?? null;
+    if (minKol > 0 && (traderSol == null || traderSol < minKol)) {
+      console.log(`[solana-feed] Skipped ${kol.label} buy (${traderSol ?? '?'} SOL < min ${minKol} SOL)`);
+      return;
+    }
+    if (maxKol != null && maxKol > 0 && traderSol != null && traderSol > maxKol) {
+      console.log(`[solana-feed] Skipped ${kol.label} buy (${traderSol} SOL > max ${maxKol} SOL)`);
+      return;
+    }
+    const targetBuySol = kol.copyMode === 'proportional' && traderSol != null && traderSol > 0
+      ? Math.min(cfg.strategy.max_buy_sol, Math.max(cfg.strategy.min_buy_sol, +(traderSol * ((kol.copyPct ?? 100) / 100)).toFixed(4)))
+      : kol.buySizeSol;
+
     const ts = Date.now();
     const slot = msg.slotOverride ?? (this.cp.currentSlot() || this.lastSlot);
     const symbol = (msg.symbol || msg.mint.slice(0, 4)).trim().slice(0, 16);
@@ -1375,7 +1391,7 @@ export class SolanaLiveFeed {
       mint: msg.mint,
       symbol,
       venue,
-      sizeSol: kol.buySizeSol,
+      sizeSol: targetBuySol,
       fanout: 0,
       winner: null,
       cuUsed: 0,
@@ -1386,15 +1402,15 @@ export class SolanaLiveFeed {
     this.cp.ingestExternalEvent({ type: 'kol_shred_detected', ts, slot, kolId: kol.id, mint: ev.mint, symbol, venue: ev.venue });
     this.cp.ingestExternalEvent({ type: 'burst_dispatched', ts, burst: ev }, msg.signature ?? null);
     if (this.cp.engineStatus === 'SHADOW' && this.paper.size < 5 && !this.paper.has(msg.mint)) {
-      this.openPaperPosition(ev, kol.buySizeSol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, msg.entryPriceSol);
+      this.openPaperPosition(ev, targetBuySol, msg.vSolInBondingCurve, msg.vTokensInBondingCurve, ws, msg.bondingCurveKey, msg.entryPriceSol);
     } else if (this.cp.engineStatus === 'RUNNING') {
       // Direct-native Rust executor supports Pump.fun bonding-curve + PumpSwap AMM (with atomic WSOL wrap/unwrap).
       if (ev.venue !== 'Pump.fun' && ev.venue !== 'PumpSwap') return;
       if (ev.venue === 'PumpSwap' && (!msg.dexAccounts || msg.dexAccounts.length < 17)) return;
       const realOpen = this.cp.snapshot().positions.filter((p) => !p.id.startsWith('paper_'));
       if (realOpen.length >= 5 || realOpen.some((p) => p.mint === msg.mint)) return;
-      const maxAffordable = this.solBalance > 0.11 ? +(this.solBalance - 0.06).toFixed(4) : kol.buySizeSol;
-      const liveBuySol = Math.max(0.05, Math.min(kol.buySizeSol, maxAffordable));
+      const maxAffordable = this.solBalance > 0.11 ? +(this.solBalance - 0.06).toFixed(4) : targetBuySol;
+      const liveBuySol = Math.max(0.05, Math.min(targetBuySol, maxAffordable));
       if (this.pumpWs?.readyState === WebSocket.OPEN) {
         this.pumpWs.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [msg.mint] }));
       }

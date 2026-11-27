@@ -492,9 +492,20 @@ impl SignalDetector {
             for ix in &tx.instructions {
                 if let Some(buy) = parse_buy_ix(ix) {
                     found_direct = true;
+                    if kol.min_kol_buy_lamports > 0 && buy.estimated_spend < kol.min_kol_buy_lamports {
+                        continue;
+                    }
+                    if kol.max_kol_buy_lamports > 0 && buy.estimated_spend > kol.max_kol_buy_lamports {
+                        continue;
+                    }
+                    let resolved_buy_lamports = if kol.copy_proportional && buy.estimated_spend > 0 {
+                        ((buy.estimated_spend as f64) * (kol.copy_pct / 100.0)).clamp(10_000_000.0, 100_000_000_000.0) as u64
+                    } else {
+                        kol.buy_size_lamports
+                    };
                     let watched_account = kol.quote_token_account.unwrap_or(kol.pubkey);
                     let pre_balance = self.balances.get(&watched_account).unwrap_or(0);
-                    let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports);
+                    let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports.max(kol.min_kol_buy_lamports));
                     let strategy_id = if buy.quote_mint != WSOL_MINT {
                         StrategyId::GenericQuoteSnipe
                     } else {
@@ -526,7 +537,7 @@ impl SignalDetector {
                             pre_balance,
                             balance_threshold,
                             estimated_kol_spend: buy.estimated_spend,
-                            buy_size_lamports: kol.buy_size_lamports,
+                            buy_size_lamports: resolved_buy_lamports,
                             max_curve_reserve_lamports: kol.max_curve_reserve_lamports,
                         },
                     });
@@ -567,7 +578,7 @@ impl SignalDetector {
                                         }
                                         let watched_account = kol.quote_token_account.unwrap_or(kol.pubkey);
                                         let pre_balance = self.balances.get(&watched_account).unwrap_or(0);
-                                        let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports);
+                                        let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports.max(kol.min_kol_buy_lamports));
                                         let opportunity_key =
                                             compute_opportunity_key(&cand_mint, tx.slot, StrategyId::KolBackrun);
                                         info!(
@@ -624,7 +635,7 @@ impl SignalDetector {
                                     }
                                     let watched_account = kol.quote_token_account.unwrap_or(kol.pubkey);
                                     let pre_balance = self.balances.get(&watched_account).unwrap_or(0);
-                                    let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports);
+                                    let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports.max(kol.min_kol_buy_lamports));
                                     let opportunity_key =
                                         compute_opportunity_key(&cand_mint, tx.slot, StrategyId::KolBackrun);
                                     info!(
@@ -674,7 +685,7 @@ impl SignalDetector {
                                 let dex_slice = accs[start..slice_end].to_vec();
                                 let watched_account = kol.quote_token_account.unwrap_or(kol.pubkey);
                                 let pre_balance = self.balances.get(&watched_account).unwrap_or(0);
-                                let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports);
+                                let balance_threshold = pre_balance.saturating_sub(kol.margin_lamports.max(kol.min_kol_buy_lamports));
                                 let opportunity_key =
                                     compute_opportunity_key(&cand_mint, tx.slot, StrategyId::KolBackrun);
                                 info!(
@@ -877,6 +888,10 @@ mod tests {
             margin_lamports: 20_000_000, // 0.02 SOL
             buy_size_lamports: 3_000_000_000,
             max_curve_reserve_lamports: 85_000_000_000,
+            min_kol_buy_lamports: 0,
+            max_kol_buy_lamports: 0,
+            copy_proportional: false,
+            copy_pct: 100.0,
             enabled: true,
         });
         balances.set(kol_pk, 10_000_000_000); // 10 SOL pre-slot balance

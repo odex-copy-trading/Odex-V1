@@ -21,6 +21,10 @@ export const KolInput = z.object({
   triggerMargin: z.number().gt(0, 'Must be greater than 0'),
   buySizeSol: z.number().min(0.01).max(100),
   maxCurveReserveSol: z.number().gt(0),
+  minKolBuySol: z.number().min(0).max(10_000).optional(),
+  maxKolBuySol: z.number().gt(0).max(10_000).nullable().optional(),
+  copyMode: z.enum(['fixed', 'proportional']).optional(),
+  copyPct: z.number().min(1).max(500).optional(),
   enabled: z.boolean(),
 }).strict();
 export const KolPatch = KolInput.partial().strict();
