@@ -1355,7 +1355,7 @@ export class SolanaLiveFeed {
     const cfg = this.cp.configState().config;
     if (!cfg.strategy.modes.kol_backrun || !msg.mint || !msg.traderPublicKey) return;
     if (msg.signature) {
-      if (this.seenKolSigs.has(msg.signature) && !msg.venueOverride) return;
+      if (this.seenKolSigs.has(msg.signature)) return;
       this.markKolSigSeen(msg.signature);
     }
     const kol = this.cp.snapshot().kols.find((k) => k.enabled && k.pubkey === msg.traderPublicKey);
