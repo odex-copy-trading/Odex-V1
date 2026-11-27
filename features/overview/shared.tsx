@@ -114,19 +114,19 @@ export function TokenCell({ symbol, badge, sub, mint, ts, image }: { symbol: str
     toast(ok ? `Copied ${shortKey(mint, 4)}` : 'Copy failed', ok ? 'ok' : 'error');
   };
   return (
-    <div className="flex min-w-0 items-center gap-3.5">
+    <div className="flex min-w-0 items-center gap-2.5">
       <TokenAvatar symbol={symbol} image={image} mint={mint} />
       <div className="min-w-0">
-        <div className="flex items-center gap-1.5 text-[0.97rem] font-semibold leading-snug">
+        <div className="flex items-center gap-1.5 text-[0.86rem] font-semibold leading-snug">
           <span className="truncate">${symbol}</span>
-          <span className="shrink-0 rounded-md bg-raised px-1.5 py-0.5 text-[0.64rem] font-bold tracking-wider text-fg2">{badge}</span>
+          <span className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[0.6rem] font-bold tracking-wider text-fg2">{badge}</span>
         </div>
-        <div className="mt-0.5 flex items-center gap-1.5 truncate text-[0.84rem] text-muted">
+        <div className="mt-0.5 flex items-center gap-1.5 truncate text-[0.75rem] text-muted">
           {ts != null && ts > 0 && <LaunchTimer ts={ts} />}
           <span className="truncate">{sub}</span>
         </div>
         {mint && (
-          <div className="mt-0.5 flex items-center gap-1 text-[0.75rem] text-muted">
+          <div className="mt-0.5 flex items-center gap-1 text-[0.7rem] text-muted">
             <a
               href={`https://solscan.io/token/${encodeURIComponent(mint)}`}
               target="_blank"
@@ -134,7 +134,7 @@ export function TokenCell({ symbol, badge, sub, mint, ts, image }: { symbol: str
               title={mint}
               className="num truncate hover:text-fg"
             >
-              {shortKey(mint, 6)}
+              {shortKey(mint, 5)}
             </a>
             <button
               type="button"
@@ -154,16 +154,16 @@ export function TokenCell({ symbol, badge, sub, mint, ts, image }: { symbol: str
 /** Two-line numeric cell: primary value over a muted secondary (reference style). */
 export function NumCell({ top, bottom, topCls }: { top: ReactNode; bottom?: ReactNode; topCls?: string }) {
   return (
-    <div className="flex flex-col items-end gap-0.5 tabular-nums">
-      <span className={cx('text-[0.95rem] font-medium', topCls)}>{top}</span>
-      {bottom != null && <span className="text-[0.88rem] text-muted">{bottom}</span>}
+    <div className="flex flex-col items-end gap-0.5 whitespace-nowrap tabular-nums">
+      <span className={cx('whitespace-nowrap text-[0.84rem] font-medium', topCls)}>{top}</span>
+      {bottom != null && <span className="whitespace-nowrap text-[0.74rem] text-muted">{bottom}</span>}
     </div>
   );
 }
 
 export function PctChip({ v }: { v: number }) {
   const t = v > 0 ? 'bg-emerald-400/12 text-emerald-400' : v < 0 ? 'bg-rose-400/13 text-rose-400' : 'bg-raised text-fg2';
-  return <span className={cx('rounded-md px-1.5 py-0.5 text-[0.8rem] font-semibold tabular-nums', t)}>{v > 0 ? '+' : v < 0 ? '−' : ''}{Math.abs(v).toFixed(1)}%</span>;
+  return <span className={cx('whitespace-nowrap rounded-md px-1.5 py-0.5 text-[0.72rem] font-semibold tabular-nums', t)}>{v > 0 ? '+' : v < 0 ? '−' : ''}{Math.abs(v).toFixed(1)}%</span>;
 }
 
 export function StatusChip({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'warn' | 'ok' | 'bad' | 'info' }) {
@@ -174,13 +174,13 @@ export function StatusChip({ children, tone = 'neutral' }: { children: ReactNode
     bad: 'border-rose-400/30 bg-rose-400/10 text-rose-300',
     info: 'border-sky-400/30 bg-sky-400/10 text-sky-300',
   }[tone];
-  return <span className={cx('inline-flex whitespace-nowrap rounded-[0.55rem] border px-2.5 py-1 text-[0.88rem]', t)}>{children}</span>;
+  return <span className={cx('inline-flex whitespace-nowrap rounded-[0.5rem] border px-2 py-0.5 text-[0.76rem]', t)}>{children}</span>;
 }
 
-/** Table header / cell in the reference style (sentence case, generous rows). */
+/** Table header / cell (compact, responsive, non-wrapping numbers). */
 export function RTh({ children, right, className }: { children?: ReactNode; right?: boolean; className?: string }) {
-  return <th scope="col" className={cx('whitespace-nowrap border-b border-line px-4 py-3 text-[0.88rem] font-semibold text-fg2 first:pl-7 last:pr-7', right ? 'text-right' : 'text-left', className)}>{children}</th>;
+  return <th scope="col" className={cx('whitespace-nowrap border-b border-line px-2.5 py-2.5 text-[0.78rem] font-semibold text-fg2 first:pl-4 last:pr-4', right ? 'text-right' : 'text-left', className)}>{children}</th>;
 }
 export function RTd({ children, right, className }: { children?: ReactNode; right?: boolean; className?: string }) {
-  return <td className={cx('border-b border-line px-4 py-3.5 align-middle first:pl-7 last:pr-7', right && 'text-right', className)}>{children}</td>;
+  return <td className={cx('border-b border-line px-2.5 py-3 align-middle first:pl-4 last:pr-4', right && 'whitespace-nowrap text-right', className)}>{children}</td>;
 }

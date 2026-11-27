@@ -29,12 +29,12 @@ function SellButtons({ p }: { p: Position }) {
     finally { setBusy(null); }
   };
   return (
-    <div className="flex justify-end gap-1.5" role="group" aria-label={`Panic sell $${p.symbol}`}>
+    <div className="flex justify-end gap-1" role="group" aria-label={`Panic sell $${p.symbol}`}>
       {([15, 25, 33, 50, 100] as const).map((pct) => (
         <button key={pct} type="button" disabled={inFlight != null} onClick={(e) => { e.stopPropagation(); sell(pct); }} aria-label={`Sell ${pct}% of $${p.symbol}`}
-          className={cx('inline-flex h-8 min-w-10 items-center justify-center rounded-[0.55rem] px-1.5 text-[0.78rem] font-semibold tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+          className={cx('inline-flex h-7 min-w-8 items-center justify-center rounded-[0.45rem] px-1.5 text-[0.72rem] font-semibold tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-50',
             pct === 100 ? 'bg-rose-500/15 text-rose-300 hover:bg-rose-500/25' : 'bg-raised text-fg hover:bg-hover')}>
-          {inFlight === pct ? <LoaderCircle className="size-3.5 animate-spin" aria-label="Selling" /> : `${pct}%`}
+          {inFlight === pct ? <LoaderCircle className="size-3 animate-spin" aria-label="Selling" /> : `${pct}%`}
         </button>
       ))}
     </div>
@@ -57,7 +57,7 @@ export function PositionsTab({ rows, unit }: { rows: Position[]; unit: 'USD' | '
               <RTd right className="hidden lg:table-cell"><NumCell top={usd(p.entrySol, px)} bottom={`${fmtSol(p.entrySol)} SOL`} /></RTd>
               <RTd right className="hidden md:table-cell"><NumCell top={usd(value, px)} bottom={`${fmtSol(value)} SOL`} /></RTd>
               <RTd right>
-                <NumCell top={<span className="inline-flex items-center gap-2"><span className={tone(pnl)}>{unit === 'USD' ? usd(pnl, px, true) : `${fmtSol(pnl, 4, true)} SOL`}</span><PctChip v={pct} /></span>}
+                <NumCell top={<span className="inline-flex items-center gap-1.5 whitespace-nowrap"><span className={tone(pnl)}>{unit === 'USD' ? usd(pnl, px, true) : `${fmtSol(pnl, 4, true)} SOL`}</span><PctChip v={pct} /></span>}
                   bottom={unit === 'USD' ? `${fmtSol(pnl, 4, true)} SOL` : usd(pnl, px, true)} />
               </RTd>
               <RTd className="hidden sm:table-cell">{p.pendingSell ? <StatusChip tone="warn">Selling {p.pendingSell}%…</StatusChip> : <StatusChip>{rem > 0.999 ? 'Holding' : `${Math.round(rem * 100)}% left`}</StatusChip>}</RTd>
@@ -95,7 +95,7 @@ export function ClosedTab({ rows, unit }: { rows: ClosedPosition[]; unit: 'USD' 
               <RTd right className="hidden md:table-cell"><NumCell top={usd(c.entrySol, c.solUsd)} bottom={`${fmtSol(c.entrySol)} SOL`} /></RTd>
               <RTd right className="hidden md:table-cell"><NumCell top={usd(c.proceedsSol, c.solUsd)} bottom={`${fmtSol(c.proceedsSol)} SOL`} /></RTd>
               <RTd right>
-                <NumCell top={<span className="inline-flex items-center gap-2"><span className={tone(pnl)}>{unit === 'USD' ? usd(pnl, c.solUsd, true) : `${fmtSol(pnl, 4, true)} SOL`}</span><PctChip v={pct} /></span>}
+                <NumCell top={<span className="inline-flex items-center gap-1.5 whitespace-nowrap"><span className={tone(pnl)}>{unit === 'USD' ? usd(pnl, c.solUsd, true) : `${fmtSol(pnl, 4, true)} SOL`}</span><PctChip v={pct} /></span>}
                   bottom={unit === 'USD' ? `${fmtSol(pnl, 4, true)} SOL` : usd(pnl, c.solUsd, true)} />
               </RTd>
               <RTd className="hidden sm:table-cell"><StatusChip tone={EXIT_TONE[c.exitReason] ?? 'neutral'}>{c.exitReason}</StatusChip></RTd>
