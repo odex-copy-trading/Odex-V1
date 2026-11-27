@@ -1514,7 +1514,8 @@ export class SolanaLiveFeed {
       proceedsSol: 0,
       pendingSell: null,
     };
-    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey, creator, hasLiveTick: false, breakevenArmed: false, instantTpFired: false, lastTwapAt: 0, firedSteps: new Set() });
+    const curvePda = ev.venue === 'Pump.fun' ? (deriveBondingCurve(ev.mint) ?? undefined) : undefined;
+    this.paper.set(ev.mint, { pos, peakPrice: markPrice, vSol: postVSol, bondingCurveKey: curvePda, creator, hasLiveTick: false, breakevenArmed: false, instantTpFired: false, lastTwapAt: 0, firedSteps: new Set() });
     console.log(`[solana-feed] Shadow AMM buy: $${ev.symbol} (${buySol} SOL + ${buyFeeSol} fee, vSol=${postVSol.toFixed(1)}, curve=${bondingCurveKey ?? 'n/a'})`);
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [ev.mint] }));
@@ -1617,7 +1618,7 @@ export class SolanaLiveFeed {
     // Only poll DexScreener for mints WITHOUT an active on-chain bondingCurveKey (prevents stale DexScreener cache from flickering against live RPC!).
     const fallbackMints: string[] = [];
     for (const [mint, e] of this.paper.entries()) {
-      if (!e.bondingCurveKey) fallbackMints.push(mint);
+      if (!e.bondingCurveKey || e.pos.venue !== 'Pump.fun' || !e.hasLiveTick) fallbackMints.push(mint);
     }
     if (fallbackMints.length === 0) return;
     const mints = fallbackMints.join(',');
