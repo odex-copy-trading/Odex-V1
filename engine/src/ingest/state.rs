@@ -125,6 +125,14 @@ impl WatchlistCache {
             buy_size_sol: f64,
             #[serde(rename = "maxCurveReserveSol")]
             max_curve_reserve_sol: f64,
+            #[serde(default, rename = "minKolBuySol")]
+            min_kol_buy_sol: f64,
+            #[serde(default, rename = "maxKolBuySol")]
+            max_kol_buy_sol: Option<f64>,
+            #[serde(default, rename = "copyMode")]
+            copy_mode: Option<String>,
+            #[serde(default, rename = "copyPct")]
+            copy_pct: Option<f64>,
             enabled: bool,
         }
         #[derive(Deserialize)]
@@ -162,6 +170,10 @@ impl WatchlistCache {
                         margin_lamports: (k.trigger_margin * scale).max(1.0) as u64,
                         buy_size_lamports: (k.buy_size_sol * 1_000_000_000.0) as u64,
                         max_curve_reserve_lamports: (k.max_curve_reserve_sol * 1_000_000_000.0) as u64,
+                        min_kol_buy_lamports: (k.min_kol_buy_sol.max(0.0) * 1_000_000_000.0) as u64,
+                        max_kol_buy_lamports: (k.max_kol_buy_sol.unwrap_or(0.0).max(0.0) * 1_000_000_000.0) as u64,
+                        copy_proportional: k.copy_mode.as_deref() == Some("proportional"),
+                        copy_pct: k.copy_pct.unwrap_or(100.0).clamp(1.0, 500.0),
                         enabled: k.enabled,
                     });
                 }
