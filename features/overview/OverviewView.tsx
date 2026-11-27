@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { Snowflake, Upload, X } from '@/components/icons';
 import { Skeleton, cx } from '@/components/ui';
@@ -22,6 +22,48 @@ const LADDER_BARS: { pct: string; h: string }[] = [
   { pct: '50%', h: 'h-18' },
   { pct: '100%', h: 'h-26' },
 ];
+
+function AnimatedUsd({ value }: { value: number }) {
+  const [display, setDisplay] = useState(value);
+  const currentRef = useRef(value);
+
+  useEffect(() => {
+    const from = currentRef.current;
+    const to = Number.isFinite(value) ? value : 0;
+    if (Math.abs(to - from) < 0.005) {
+      currentRef.current = to;
+      setDisplay(to);
+      return;
+    }
+    const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (reduced) {
+      currentRef.current = to;
+      setDisplay(to);
+      return;
+    }
+
+    const duration = 520;
+    const start = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      // Ease-out cubic for crisp Robinhood/Phantom-style counter roll
+      const eased = 1 - Math.pow(1 - t, 3);
+      const next = from + (to - from) * eased;
+      currentRef.current = next;
+      setDisplay(next);
+      if (t < 1) raf = requestAnimationFrame(tick);
+      else {
+        currentRef.current = to;
+        setDisplay(to);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value]);
+
+  return <>{fmtUsd(display)}</>;
+}
 
 function EmptyPositionsLadder() {
   return (
@@ -221,7 +263,7 @@ export function OverviewView() {
               <div className="mt-2 h-14 w-52 animate-pulse rounded-xl bg-black/15" />
             ) : (
               <Link href="/wallets" className="mt-1.5 block truncate text-[3.5rem] font-bold leading-none tracking-tight tabular-nums text-[#09090d] hover:opacity-90 sm:text-[4.25rem]">
-                {fmtUsd(total)}
+                <AnimatedUsd value={total} />
               </Link>
             )}
           </div>
